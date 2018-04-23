@@ -28,13 +28,20 @@ import maya.api.OpenMaya as api
 import maya.api.OpenMayaAnim as anim
 import maya.OpenMayaUI as mui
 
+try:
+    import sip # Try PyQt4 or 5
+except ImportError:
+    import shiboken  # Do Pyside or Pyside2
+
 # Qt is a project by Marcus Ottosson-> https://github.com/mottosso/Qt.py
 from Qt import QtGui, QtCore, QtCompat, QtWidgets, __binding__
-from Qt.QtGui import QPen, QColor, QBrush, QLinearGradient
+# from Qt.QtGui import QPen, QColor, QBrush, QLinearGradient
 
+import base64
 import itertools
 from collections import OrderedDict
 from functools import wraps
+import re # I'm so sorry
 
 # Globals ============================================================ #
 
@@ -52,10 +59,13 @@ pin_data = OrderedDict([
     # ('rotates_enabled'       , {'attributeType':   "bool"}),
     ('translate_keys'        , {'dataType'     : "string"}),
     ('rotate_keys'           , {'dataType'     : "string"}),
-    # ('preserve_blend_parent' , {'attributeType':   "bool"}) # Was there a blendparent node there to begin with?
+    ('translate_locked'      , {'attributeType':   "bool"}),
+    ('rotate_locked'         , {'attributeType':   "bool"}),
+    ('preserve_blendParent'  , {'dataType'     : "string"}) # Was there a blendparent node there to begin with?
 ])
 # Get the timeline object
 aPlayBackSliderPython = mel.eval('$tmpVar=$gPlayBackSlider')
+tuple_rex = re.compile("([0-9]+\.[0-9]+\, [0-9]+\.[0-9]+)")
 
 # Decorators ========================================================= #
 
@@ -105,6 +115,7 @@ def undo(func):
 
 # Public methods ===================================================== #
 
+@undo
 def create_pins(selection = None, start_frame = None, end_frame = None, group_override = None):
     '''
     selection: could be a string, list of strings, or MSelectionList
@@ -161,13 +172,11 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
         control = cmds.getAttr(pin + '.control')
         MSel = api.MGlobal.getSelectionListByName(control)
         controlFN = api.MFnDependencyNode(MSel.getDependNode(0))
-        translate_plug = controlFN.findPlug('translate', False)
-        rotate_plug = controlFN.findPlug('rotate', False)
-        if _is_locked_or_not_keyable(translate_plug):
+        if _is_locked_or_not_keyable(controlFN, 'translate'):
             skip_translate = ['x', 'y', 'z']
         else:
             skip_translate = 'none'
-        if _is_locked_or_not_keyable(rotate_plug):
+        if _is_locked_or_not_keyable(controlFN, 'rotate'):
             skip_rotate = ['x', 'y', 'z']
         else:
             skip_rotate = 'none'
@@ -195,9 +204,16 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
                 "Could not key the blendParent. " \
                  "Be careful outside the buffer range!")
 
+        # Lock the attributes of the locator that were locked on the control
+        t_lock = cmds.getAttr(pin + '.translate_locked')
+        r_lock = cmds.getAttr(pin + '.rotate_locked')
+        cmds.setAttr(locator + '.t', lock=t_lock, keyable=(not t_lock))
+        cmds.setAttr(locator + '.r', lock=r_lock, keyable=(not r_lock))
+
+
     print "Success!"
 
-
+@undo
 def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame = None):
     ''' 
     Bake options
@@ -206,13 +222,17 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
         # check selection
         selection = cmds.ls(sl=True)
     pin_groups = _get_pin_groups()
-
     pin_group_list = set(selection).intersection(pin_groups)
-
     pins_to_bake = _get_pins(pin_group_list)
+
+    if not pins_to_bake:
+        api.MGlobal.displayWarning(\
+            "No pins could be found to bake.")
+        return None
 
     constraints = []
     controls_to_bake = []
+    blendParents_to_restore = {}
     pin_groups_to_delete = set()
     for pin in pins_to_bake:
         pin_constraint = cmds.getAttr(pin + '.constraint')
@@ -221,6 +241,8 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
         controls_to_bake.append(control)
         pin_parent = cmds.listRelatives(pin, parent=True)[0]
         pin_groups_to_delete.add(pin_parent)
+        bp_keys = cmds.getAttr(pin + '.preserve_blendParent')
+        blendParents_to_restore[control] = bp_keys
 
     start_frame, end_frame = _validate_bakerange(pins_to_bake, start_frame, end_frame)
     if not start_frame or not end_frame:
@@ -238,6 +260,16 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
     if not success:
         raise ValueError("Bake failed.")
     cmds.refresh() # Check it out
+
+    for control, bp_keys in blendParents_to_restore.items():
+        for match in tuple_rex.finditer(bp_keys):
+            cmds.setKeyframe(\
+                control, \
+                at='blendParent1', \
+                time = float(match.group(0).split(', ')[0]), \
+                value = float(match.group(0).split(', ')[1]) \
+            )
+
     if bake_option == 0: # Proceed with the Match Keys procedure
         success = _match_keys_procedure(pins_to_bake, start_frame, end_frame)
         if not success:
@@ -250,8 +282,6 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
 
 
 # Private methods ==================================================== #
-
-
 
 def _to_ranges(iterable):
     # https://stackoverflow.com/questions/4628333/converting-a-list-of-integers-into-range-in-python/43091576#43091576
@@ -296,14 +326,19 @@ def _validate_bakerange(pins_to_bake, start_frame, end_frame):
     return start_frame, end_frame
 
 
-def _is_locked_or_not_keyable(plug):
+def _is_locked_or_not_keyable(controlFN, attribute):
+    plug = controlFN.findPlug(attribute, False)
     if any(plug.child(p).isLocked for p in range(plug.numChildren())):
         return True
     if not any(plug.child(p).isKeyable for p in range(plug.numChildren())):
         return True
-    if any(plug.child(p).source() for p in range(plug.numChildren()) \
-        if plug.child(p).source().info.split('.')[-1] != 'output'):
-        return True # Check to see if it is constrained
+    for p in range(plug.numChildren()):
+        plug_array = plug.child(p).connectedTo(True, False)
+        if plug_array:
+            if plug_array[0].isChild:
+                return True # Assume it is constrained
+                # Check to see if it is constrained
+                # return plug_array[0].parent().node().hasFn(api.MFn.kParentConstraint):
     return False
 
 
@@ -313,8 +348,8 @@ def _validate_selection(sel_list):
 
     for i in range(sel_list.length()):
         control_dep = sel_list.getDependNode(i)
-        control_dep_FN = api.MFnDependencyNode(control_dep)
-        control_name = control_dep_FN.name()
+        controlFN = api.MFnDependencyNode(control_dep)
+        control_name = controlFN.name()
 
         pinned_control = control_name + ap_prefix
         if pinned_control in current_pins:
@@ -329,16 +364,14 @@ def _validate_selection(sel_list):
                 "Skipping..." % control_name)
             continue
 
-        if control_dep_FN.typeName != 'transform':
+        if controlFN.typeName != 'transform':
             api.MGlobal.displayError(\
                 "Node '%s' is not a valid transform node. " \
                 "Skipping..." % control_name)
             continue
 
-        t_plug = control_dep_FN.findPlug('translate', False)
-        r_plug = control_dep_FN.findPlug('rotate', False)
-        if _is_locked_or_not_keyable(t_plug) and \
-            _is_locked_or_not_keyable(r_plug):
+        if _is_locked_or_not_keyable(controlFN, 'translate') and \
+            _is_locked_or_not_keyable(controlFN, 'rotate'):
             api.MGlobal.displayError(\
                 "Node '%s' has no available transform channels. " \
                 "Skipping..." % control_name)
@@ -404,15 +437,37 @@ def _read_control_data(control, start_frame, end_frame):
     # global pin_data # Do we need this
     control_data = OrderedDict()
     controlFN = api.MFnDependencyNode(control)
+    control_name = str(controlFN.name())
 
     t_keys = _get_keys_from_obj_attribute(controlFN, 'translate')
     r_keys = _get_keys_from_obj_attribute(controlFN, 'rotate')
 
-    control_data['control'] = str(controlFN.name())
+    t_lock = _is_locked_or_not_keyable(controlFN, 'translate')
+    r_lock = _is_locked_or_not_keyable(controlFN, 'rotate')
+
+    # Goddammit, I shouldn't be assuming blendparent1
+    # Instead, I SHOULD be just tracking which one
+    # I created and store the rest. But I'm lazy.
+    bp_keys = []
+    if 'blendParent1' in cmds.listAttr(control_name):
+        bp_key_times = _get_keys_from_obj_attribute(controlFN, 'blendParent1')
+        if bp_key_times:
+            key_values = []
+            for time in bp_key_times:
+                key_value = cmds.getAttr(control_name + '.blendParent1', time = time)
+                key_values.append(key_value)
+            bp_keys = list(zip(bp_key_times, key_values))
+        else:
+            bp_keys = [cmds.getAttr(control_name + '.blendParent1')]
+
+    control_data['control'] = control_name
     control_data['start_frame'] = start_frame
     control_data['end_frame'] = end_frame
     control_data['translate_keys'] = t_keys
     control_data['rotate_keys'] = r_keys
+    control_data['translate_locked'] = t_lock
+    control_data['rotate_locked'] = r_lock
+    control_data['preserve_blendParent'] = bp_keys # ugh
 
     return control_data
 
@@ -485,6 +540,9 @@ def _create_locator_pin(control_data, pin_group):
     cmds.setAttr(locator + ".scale", *[locator_scale]*3) # Unpack * 3
     cmds.parent(locator, pin_group)
 
+    for attr in ['x', 'y', 'z']:
+        cmds.setAttr(locator + '.s' + attr, keyable=False, channelBox=True)
+
     for key, value in pin_data.iteritems():
         cmds.addAttr(locator, longName=key, **value) # kwargs ftw
 
@@ -497,14 +555,6 @@ def _create_locator_pin(control_data, pin_group):
             cmds.setAttr(locator + '.' + key, value)
 
     return locator
-
-
-def _is_valid_node(node):
-    # check to see if it is a transform
-    # Check to see if the node has unlocked channels - translate or rotate
-    # check to see if it is already constrained to something else
-    # check to see if it has unkeyable attributes
-    return True
 
 
 def _get_maya_window():
@@ -527,7 +577,7 @@ def _wrap_instance(ptr, base=None):
     if ptr is None:
         return None
     ptr = long(ptr) #Ensure type
-    if globals().has_key('shiboken') and __binding__ == "PySide":
+    if globals().has_key('shiboken') and "PySide" in __binding__:
         if base is None:
             qObj = shiboken.wrapInstance(long(ptr), QtCore.QObject)
             metaObj = qObj.metaObject()
@@ -540,7 +590,7 @@ def _wrap_instance(ptr, base=None):
             else:
                 base = QtGui.QWidget
         return shiboken.wrapInstance(long(ptr), base)
-    elif globals().has_key('sip') and __binding__ == "PyQt":
+    elif globals().has_key('sip') and "PyQt" in __binding__:
         base = QtCore.QObject
         return sip.wrapinstance(long(ptr), base)
     else:
@@ -551,8 +601,8 @@ def _wrap_instance(ptr, base=None):
 
 # Decorated methods ================================================== #
 
-@undo
-def _match_keys_procedure(pins_to_bake, start_frame, end_frame):
+# @undo
+def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True):
     for pin in pins_to_bake:
         control = cmds.getAttr(pin + '.control')
         # Snipe translate keys
@@ -564,10 +614,8 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame):
                                    attribute='t', 
                                    time=(start_frame, end_frame), 
                                    query=True) or [])
-        keys_to_remove = list(set(translate_keys_baked - \
-                              set(translate_keys)))
-        for key in _to_ranges(keys_to_remove):
-            cmds.cutKey(control, t=key, attribute='t', clear=True)
+        translate_keys_to_remove = list(set(translate_keys_baked - \
+                                        set(translate_keys)))
 
         # Snipe rotate keys
         rotate_keys = cmds.getAttr(pin + '.rotate_keys') or []
@@ -578,10 +626,35 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame):
                                 attribute='r', 
                                 time=(start_frame, end_frame), 
                                 query=True) or [])
-        keys_to_remove = list(set(rotate_keys_baked - \
-                              set(rotate_keys)))
-        for key in _to_ranges(keys_to_remove):
-            cmds.cutKey(control, t=key, attribute='r', clear=True)
+        rotate_keys_to_remove = list(set(rotate_keys_baked - \
+                                     set(rotate_keys)))
+
+        keys_baked = list(translate_keys_baked | rotate_keys_baked) # Join 2 sets
+        if composite == True:
+            composited_keys = list(set(translate_keys + rotate_keys))
+            keys_to_remove = list(set(keys_baked) - set(composited_keys))
+            for key in _to_ranges(keys_to_remove):
+                cmds.cutKey(control, t=key, attribute=('t', 'r'), clear=True)
+            # for key in _to_ranges(keys_to_remove):
+            #     cmds.cutKey(control, t=key, attribute='r', clear=True)    
+        else:
+            for key in _to_ranges(translate_keys_to_remove):
+                cmds.cutKey(control, t=key, attribute='t', clear=True)
+            for key in _to_ranges(rotate_keys_to_remove):
+                cmds.cutKey(control, t=key, attribute='r', clear=True)
+
+        keys_baked.insert(0, keys_baked[0]-1)
+        keys_baked.append(keys_baked[-1]+1)
+        keys = []
+        bp_keys = cmds.getAttr(pin + '.preserve_blendParent')
+        for match in tuple_rex.finditer(bp_keys):
+            keys.append(float(match.group(0).split(', ')[0]))
+            # values = float(match.group(0).split(', ')[1])
+        bp_keys_to_remove = list(set(keys_baked) - set(keys))
+        for key in _to_ranges(bp_keys_to_remove):
+            cmds.cutKey(control, t=key, attribute=('blendParent1'), clear=True)
+
+
 
     return True
 
@@ -624,26 +697,67 @@ class View(QtWidgets.QDialog):
         self.setObjectName('AnimPin')
         self.setWindowTitle('Animation Pin Tool')
         self.setProperty("saveWindowPref", True)
+        self.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
         # Build UI --------------------------------------------------- #
         self.setLayout(QtWidgets.QVBoxLayout())
         self.layout().setContentsMargins(20, 20, 20, 20)
         self.layout().setSpacing(8)
+        self.setStyleSheet("\
+            QWidget {\
+                background-color: rgb(70, 70, 70);\
+                color: rgb(140, 140, 140);\
+                font: 10pt Helvetica, sans-serif;\
+                outline: 0;\
+            }\
+            QLabel {\
+                background-color: rgb(59, 82, 125);\
+            }\
+            QPushButton {\
+                background-color: rgb(80, 80, 80);\
+                border-style: solid;\
+                border-width:0px;\
+                border-color: rgb(160, 70, 60);\
+                border-radius:8px;\
+                color: rgb(186, 186, 186);\
+                min-height: 50px;\
+            }\
+            QPushButton:checked {\
+                background-color: rgb(157, 102, 71);\
+            }\
+            QPushButton:focus {\
+                background-color: rgb(85, 85, 85);\
+            }\
+            QPushButton:hover{\
+                background-color: rgb(90, 90, 90);\
+            }\
+            QPushButton:pressed{\
+                background-color: rgb(74, 105, 129);\
+            }\
+            ")
+
+        qpix = QtGui.QPixmap()
+        qpix.loadFromData(image_data)
+
+        label = QtWidgets.QLabel()
+        label.setPixmap(qpix)
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        self.layout().addWidget(label)
 
         BTN_create_pins = QtWidgets.QPushButton()
         BTN_create_pins.setText("Create Pins")
         BTN_create_pins.setSizePolicy(
-            QtWidgets.QSizePolicy.Preferred,
-            QtWidgets.QSizePolicy.Preferred
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
         )
         self.layout().addWidget(BTN_create_pins)
 
         BTN_bake_pins = QtWidgets.QPushButton()
         BTN_bake_pins.setText("Bake Pins")
         BTN_bake_pins.setSizePolicy(
-            QtWidgets.QSizePolicy.Preferred,
-            QtWidgets.QSizePolicy.Preferred
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
         )
         self.layout().addWidget(BTN_bake_pins)
 
@@ -651,6 +765,19 @@ class View(QtWidgets.QDialog):
         BTN_create_pins.clicked.connect(self.on_create_pins)
         BTN_bake_pins.clicked.connect(self.on_bake_pins)
         self.destroyed.connect(self.closeEvent)
+
+    # Event methods -------------------------------------------------- #
+        self.pressPos = None
+        self.isMoving = False
+
+    def mousePressEvent(self, event):
+        self.pressPos = event.pos()
+        self.isMoving = True
+
+    def mouseMoveEvent(self, event):
+        if self.isMoving:
+            self.newPos = event.pos() - self.pressPos
+            self.move(self.window().pos() + self.newPos)
 
     # QT Event handling ---------------------------------------------- #
 
@@ -684,12 +811,17 @@ class View(QtWidgets.QDialog):
     def print_text(self, payload):
         print payload
 
+# Data =============================================================== #
+
+image_data = base64.b64decode("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")
+
 # Footer ============================================================= #
 
 def show():
     global _view
     if _view is None:
         _view = View()
+
     _view.show()
 
 # Eof
