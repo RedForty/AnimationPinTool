@@ -5,15 +5,13 @@ Ie, pin the chest while you move the hips.
 
 Or better yet, pin **all** the IK controls while you move the base node (the one that sets the character's x, y, z). 
 
-Right now, the UI is being overhauled, so all you get are two buttons. 
+<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/ImuKZqe.png">
 
-![Imgur](https://i.imgur.com/ImuKZqe.png)
+Right now, the UI is being overhauled, so all you get are two buttons. 
 
 It will default the bake range to be your timeline edit range (the inner values). If you're saavy, you can feed the create function a start/end frame to mess with it. Just check it out.
 
 When you bake the pins, it will remember the start/end frame from the creation procedure. Unless you want it to only bake a certain region within that - you could highlight part of your timeline and use it that way as well.
-
-
 
 The bake option defaults to baking back down to your previous keys. Right now it remembers the keys on rotates and translates separately (as an experiment) and will clean the bake using those as a reference.
 
