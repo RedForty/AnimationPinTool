@@ -5,7 +5,7 @@ Ie, pin the chest while you move the hips.
 
 Or better yet, pin **all** the IK controls while you move the base node (the one that sets the character's x, y, z). 
 
-<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/ImuKZqe.png">
+<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/E4PxyfL.png">
 
 Right now, the UI is being overhauled, so all you get are two buttons. 
 
