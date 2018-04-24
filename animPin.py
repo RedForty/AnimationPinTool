@@ -134,7 +134,7 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
         return None
 
     start_frame, end_frame = _validate_framerange(start_frame, end_frame)
-    if not start_frame or not end_frame:
+    if start_frame == None or end_frame == None:
         api.MGlobal.displayError(\
             "Could not validate frame range from %s to %s." % \
             (start_frame, end_frame))
