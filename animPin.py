@@ -369,7 +369,7 @@ def _validate_selection(sel_list):
                 "Skipping..." % control_name)
             continue
 
-        if not controlFN.typeName in ['transform', 'joint']:
+        if not controlFN.typeName in ['transform', 'joint', 'ikHandle']:
             api.MGlobal.displayError(\
                 "Node '%s' is not a valid transform node. " \
                 "Skipping..." % control_name)
