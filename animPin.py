@@ -2,7 +2,7 @@
 # -------------------------------------------------------------------- #
 
 __author__  = "Daniel Klug"
-__version__ = "1.01"
+__version__ = "1.02"
 __date__    = "04-24-2018"
 __email__   = "daniel@redforty.com"
 
@@ -245,7 +245,10 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
         blendParents_to_restore[control] = bp_keys
 
     start_frame, end_frame = _validate_bakerange(pins_to_bake, start_frame, end_frame)
-    if not start_frame or not end_frame:
+    if start_frame == None or end_frame == None:
+        api.MGlobal.displayError(\
+            "Could not validate frame range from %s to %s." % \
+            (start_frame, end_frame))
         return None
 
     if bake_option == 0:
@@ -314,14 +317,16 @@ def _validate_bakerange(pins_to_bake, start_frame, end_frame):
     start_frame, end_frame = _validate_framerange(start_frame, end_frame)
 
     if start_frame < all_pins_start_frame:
-        api.MGlobal.displayError(\
-            "Start frame is before pin start frame. Aborting!")
-        return None
+        start_frame = all_pins_start_frame
+        # api.MGlobal.displayError(\
+        #     "Start frame is before pin start frame. Aborting!")
+        # return None
 
     if end_frame > all_pins_end_frame:
-        api.MGlobal.displayError(\
-            "End frame is before pin end frame. Aborting!")
-        return None
+        end_frame = all_pins_end_frame
+        # api.MGlobal.displayError(\
+        #     "End frame is before pin end frame. Aborting!")
+        # return None
 
     return start_frame, end_frame
 
