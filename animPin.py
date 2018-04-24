@@ -2,7 +2,7 @@
 # -------------------------------------------------------------------- #
 
 __author__  = "Daniel Klug"
-__version__ = "1.02"
+__version__ = "1.03"
 __date__    = "04-24-2018"
 __email__   = "daniel@redforty.com"
 
@@ -369,7 +369,7 @@ def _validate_selection(sel_list):
                 "Skipping..." % control_name)
             continue
 
-        if controlFN.typeName != 'transform':
+        if not controlFN.typeName in ['transform', 'joint']:
             api.MGlobal.displayError(\
                 "Node '%s' is not a valid transform node. " \
                 "Skipping..." % control_name)
