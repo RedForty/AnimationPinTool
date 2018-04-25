@@ -706,7 +706,7 @@ class View(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
         # Build UI --------------------------------------------------- #
-        self.setLayout(QtWidgets.QVBoxLayout())
+        self.setLayout(QtWidgets.QGridLayout())
         self.layout().setContentsMargins(20, 20, 20, 20)
         self.layout().setSpacing(8)
         self.setStyleSheet("\
@@ -741,34 +741,34 @@ class View(QtWidgets.QDialog):
                 background-color: rgb(74, 105, 129);\
             }\
             ")
-
+        # Header image # 
         qpix = QtGui.QPixmap()
         qpix.loadFromData(image_data)
+        self.label = QtWidgets.QLabel()
+        self.label.setPixmap(qpix)
+        self.label.setAlignment(QtCore.Qt.AlignCenter)
+        self.layout().addWidget(self.label)
 
-        label = QtWidgets.QLabel()
-        label.setPixmap(qpix)
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        self.layout().addWidget(label)
-
-        BTN_create_pins = QtWidgets.QPushButton()
-        BTN_create_pins.setText("Create Pins")
-        BTN_create_pins.setSizePolicy(
+        # Create Buttons # 
+        self.BTN_create_pins = QtWidgets.QPushButton()
+        self.BTN_create_pins.setText("Create Pins")
+        self.BTN_create_pins.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
             QtWidgets.QSizePolicy.Expanding
         )
-        self.layout().addWidget(BTN_create_pins)
+        self.layout().addWidget(self.BTN_create_pins)
 
-        BTN_bake_pins = QtWidgets.QPushButton()
-        BTN_bake_pins.setText("Bake Pins")
-        BTN_bake_pins.setSizePolicy(
+        self.BTN_bake_pins = QtWidgets.QPushButton()
+        self.BTN_bake_pins.setText("Bake Pins")
+        self.BTN_bake_pins.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
             QtWidgets.QSizePolicy.Expanding
         )
-        self.layout().addWidget(BTN_bake_pins)
+        self.layout().addWidget(self.BTN_bake_pins)
 
         # Connections ------------------------------------------------ #
-        BTN_create_pins.clicked.connect(self.on_create_pins)
-        BTN_bake_pins.clicked.connect(self.on_bake_pins)
+        self.BTN_create_pins.clicked.connect(self.on_create_pins)
+        self.BTN_bake_pins.clicked.connect(self.on_bake_pins)
         self.destroyed.connect(self.closeEvent)
 
     # Event methods -------------------------------------------------- #
@@ -778,6 +778,9 @@ class View(QtWidgets.QDialog):
     def mousePressEvent(self, event):
         self.pressPos = event.pos()
         self.isMoving = True
+
+    def mouseReleaseEvent(self, event):
+        self.isMoving = False
 
     def mouseMoveEvent(self, event):
         if self.isMoving:
