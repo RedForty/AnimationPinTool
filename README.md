@@ -53,7 +53,7 @@ animPin.create_pins() # To create the pins based off your selection
 
 Bake:
 ```python
-animPin.bake_pins(bake_option = 1) # To bake the selected pin groups
+animPin.bake_pins(bake_option = 0) # To bake the selected pin groups
 ```
 
 **[Warnings](#warnings)**
