@@ -760,6 +760,7 @@ class View(QtWidgets.QDialog):
         self._callbacks = {}
         self.width  = WIDTH
         self.height = HEIGHT
+        self.mini_state = False
 
         # Organizing the startup sequence
         self.build_UI()
@@ -794,6 +795,7 @@ class View(QtWidgets.QDialog):
     # Build UI ------------------------------------------------------- #
 
     def build_UI(self):
+        # Start with the stylesheet ---------------------------------- #
         self.setStyleSheet("\
             QWidget{\
                 background-color: rgb(70, 70, 70);  \
@@ -1010,26 +1012,54 @@ class View(QtWidgets.QDialog):
                 border-radius: 4px;\
                 padding: 0px 2px;\
                 height:24px;\
-            }")
+            }\
+            QMenu {\
+                margin: 0px; /* some spacing around the menu */\
+                background: rgb(65, 65, 65);\
+                border: 1px solid rgb(115, 115, 115); \
+                padding: 8px 8px;\
+            }\
+            QMenu::item {\
+                color: rgb(180, 180, 180);\
+                padding: 4px 25px 4px 20px;\
+            }\
+            QMenu::item:selected {\
+                background: rgb(45, 45, 45);\
+                border-radius: 6px;\
+            }\
+            QMenu::separator {\
+                height: 2px;\
+                margin-left: 10px;\
+                margin-right: 5px;\
+            }\
+            QMenu::indicator {\
+                width: 13px;\
+                height: 13px;\
+            }\
+            ")
 
+        # Main layout ------------------------------------------------ #
         self.LYT_main_grid = QtWidgets.QGridLayout()
         self.setLayout(self.LYT_main_grid)
         self.LYT_main_grid.setContentsMargins(0, 0, 0, 0)
         self.LYT_main_grid.setSpacing(6)
 
-        # Header image # 
+        # Header image ----------------------------------------------- #
         qpix = QtGui.QPixmap()
         qpix.loadFromData(image_data)
-        self.label = QtWidgets.QLabel()
-        self.label.setObjectName("headerLabel")
-        self.label.setPixmap(qpix)
-        self.label.setAlignment(QtCore.Qt.AlignCenter)
-        self.LYT_main_grid.addWidget(self.label, 0, 0)
+        self.LBL_header_image = QtWidgets.QLabel()
+        self.LYT_main_grid.addWidget(self.LBL_header_image, 0, 0)
+        self.LBL_header_image.setObjectName("headerLabel")
+        self.LBL_header_image.setPixmap(qpix)
+        self.LBL_header_image.setAlignment(QtCore.Qt.AlignCenter)
+        self.LBL_header_image.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
 
         # The main QVBoxLayout that holds everything under the header -#
         self.LYT_main_vertical = QtWidgets.QVBoxLayout()
         self.LYT_main_grid.addLayout(self.LYT_main_vertical, 1, 0)
-        self.LYT_main_vertical.setStretch(1,1)#(1,2,1,1,3,4,0,0)
+        self.LYT_main_vertical.setStretch(1,2)#(1,2,1,1,3,4,0,0)
         self.LYT_main_vertical.setSpacing(8)
         self.LYT_main_vertical.setContentsMargins(10, 4, 10, 10)
 
@@ -1046,7 +1076,6 @@ class View(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Preferred,
             QtWidgets.QSizePolicy.Fixed)
         self.LBL_start_frame.setMinimumSize(71, 24)
-        self.LBL_start_frame.setFocusPolicy(QtCore.Qt.TabFocus)
         # - spinStartFrane
         self.SPN_start_frame = QtWidgets.QSpinBox()
         self.LYT_grid_time.addWidget(self.SPN_start_frame, 0, 1)
@@ -1128,7 +1157,7 @@ class View(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Fixed)
         self.OPT_1_bakeStep.setMinimumSize(0, 24)
         self.OPT_1_bakeStep.setFocusPolicy(QtCore.Qt.WheelFocus)
-        self.OPT_1_bakeStep.setText("Bake step")
+        self.OPT_1_bakeStep.setText("Bake step ")
 
         self.SPN_step = QtWidgets.QSpinBox()
         self.LYT_step.addWidget(self.SPN_step)
@@ -1142,7 +1171,7 @@ class View(QtWidgets.QDialog):
             QtCore.Qt.AlignVCenter)
         self.SPN_step.setButtonSymbols(\
             QtWidgets.QAbstractSpinBox.NoButtons)
-        self.SPN_step.setMinimum(-999999999)
+        self.SPN_step.setMinimum(1)
         self.SPN_step.setMaximum(999999999)
         self.SPN_step.setValue(2)
 
@@ -1209,12 +1238,27 @@ class View(QtWidgets.QDialog):
         self.LST_pin_groups.setSpacing(0)
         self.LST_pin_groups.setCurrentRow(-1)
 
+        # Right click menu ------------------------------------------- #
+
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)            
+        self.customContextMenuRequested.connect(self.on_context_menu)
+
+        self.popup_menu = QtWidgets.QMenu(self)
+        # self.popup_menu.addAction(QtWidgets.QAction('Options', self))
+        # self.popup_menu.addSeparator()
+        self.menu_mini = QtWidgets.QAction('Miniaturize UI', self)
+        self.popup_menu.addAction(self.menu_mini)
+        self.menu_mini.triggered.connect(self.on_menu_mini_clicked)
+        
+
 
     # QT Event handling ---------------------------------------------- #
 
     def mousePressEvent(self, event):
         self.pressPos = event.pos()
         self.isMoving = True
+        # if event.button() == QtCore.Qt.RightButton:
+            # print "right button clicked"
 
     def mouseReleaseEvent(self, event):
         self.isMoving = False
@@ -1349,7 +1393,7 @@ class View(QtWidgets.QDialog):
         cmds.select(selected_items, replace=True)
         #cmds.undoInfo(cck=True) # Annoying to have this flood the stack
 
-    # Widget handling ------------------------------------------------ #
+    # Main button handling ------------------------------------------- #
     
     def on_create_pins(self):
         new_pin = create_pins(\
@@ -1369,6 +1413,50 @@ class View(QtWidgets.QDialog):
             end_frame = self.SPN_end_frame.value())
         self._init_pin_group_list()
 
+    # Sub widget handling -------------------------------------------- #
+
+    def on_context_menu(self, point):
+        # Show context menu here
+        self.popup_menu.exec_(self.mapToGlobal(point))
+
+    def on_menu_mini_clicked(self):
+        if self.mini_state == False:
+            print "Miniaturizing UI!"
+            self.LST_pin_groups.hide()
+            self.LN_bottom.hide()
+            self.LN_middle.hide()
+            self.LN_top.hide()
+            self.GRP_options.hide()
+            self.LBL_start_frame.hide()
+            self.LBL_end_frame.hide()
+            self.SPN_start_frame.hide()
+            self.SPN_end_frame.hide()
+            self.width = self.geometry().width()
+            self.height = self.geometry().height()
+            self.mini_state = True
+            self.menu_mini.setText("Embiggen UI")
+        elif self.mini_state == True:
+            print "Embiggening UI!"
+            self.LST_pin_groups.show()
+            self.LN_bottom.show()
+            self.LN_middle.show()
+            self.LN_top.show()
+            self.GRP_options.show()
+            self.LBL_start_frame.show()
+            self.LBL_end_frame.show()
+            self.SPN_start_frame.show()
+            self.SPN_end_frame.show()
+            self.mini_state = False
+            self.menu_mini.setText("Miniaturize UI")
+        # self.update()
+        QtCore.QTimer.singleShot(0, self.resize_window)
+
+    def resize_window(self):
+        # self.resize(180, 180)
+        if self.mini_state == False:
+            self.resize(self.width, self.height)
+        elif self.mini_state == True:
+            self.resize(self.minimumSizeHint())
 
 
 # Data =============================================================== #
