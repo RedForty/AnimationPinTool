@@ -2,8 +2,8 @@
 # -------------------------------------------------------------------- #
 
 __author__  = "Daniel Klug"
-__version__ = "1.03"
-__date__    = "04-24-2018"
+__version__ = "1.10"
+__date__    = "04-26-2018"
 __email__   = "daniel@redforty.com"
 
 # -------------------------------------------------------------------- #
@@ -45,6 +45,8 @@ import re # I'm so sorry
 
 # Globals ============================================================ #
 
+WIDTH = 180
+HEIGHT = 462 
 _view = None
 ap_prefix= '_pin'
 pin_group = 'pin_group#'
@@ -124,7 +126,6 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
     group_override = None
     '''
     # Validate input ------------------------------------------------- #
-    master_group = _refresh_group_setup(group_override) # Set the stage
 
     sel_list = _get_selectionList(selection)
     controls = _validate_selection(sel_list)
@@ -140,7 +141,7 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
             (start_frame, end_frame))
         return None
 
-    new_pin_group = _create_new_pin_group(master_group)
+    new_pin_group = _create_new_pin_group()
     if not new_pin_group:
         api.MGlobal.displayError(\
             "Could not create a valid group to add pins.")
@@ -210,8 +211,8 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
         cmds.setAttr(locator + '.t', lock=t_lock, keyable=(not t_lock))
         cmds.setAttr(locator + '.r', lock=r_lock, keyable=(not r_lock))
 
-
-    print "Success!"
+    print "Successfully created new pin group, '%s'!" % new_pin_group
+    return new_pin_group
 
 @undo
 def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame = None):
@@ -238,13 +239,23 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
         pin_constraint = cmds.getAttr(pin + '.constraint')
         constraints.append(pin_constraint)
         control = cmds.getAttr(pin + '.control')
+        if not cmds.objExists(control):
+            # Last ditch effort to find the control. Was it renamed?
+            control = cmds.listConnections(\
+                pin_constraint + '.constraintParentInverseMatrix')[0] \
+                or []
+            if control: # fix the data
+                cmds.setAttr(pin + '.control', control, type = 'string')
         controls_to_bake.append(control)
         pin_parent = cmds.listRelatives(pin, parent=True)[0]
         pin_groups_to_delete.add(pin_parent)
         bp_keys = cmds.getAttr(pin + '.preserve_blendParent')
         blendParents_to_restore[control] = bp_keys
 
-    start_frame, end_frame = _validate_bakerange(pins_to_bake, start_frame, end_frame)
+    start_frame, end_frame = _validate_bakerange(\
+        pins_to_bake, \
+        start_frame, \
+        end_frame)
     if start_frame == None or end_frame == None:
         api.MGlobal.displayError(\
             "Could not validate frame range from %s to %s." % \
@@ -259,7 +270,10 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
         print "Baking on %ds" % sample
 
     # Do magic ------------------------------------------------------- #
-    success = _do_bake(controls_to_bake, start_frame, end_frame, sample)
+    success = _do_bake(\
+        controls_to_bake, \
+        start_frame, \
+        end_frame, sample)
     if not success:
         raise ValueError("Bake failed.")
     cmds.refresh() # Check it out
@@ -274,14 +288,24 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
             )
 
     if bake_option == 0: # Proceed with the Match Keys procedure
-        success = _match_keys_procedure(pins_to_bake, start_frame, end_frame)
+        success = _match_keys_procedure(\
+            pins_to_bake, \
+            start_frame, \
+            end_frame)
         if not success:
             raise ValueError("match_keys_procedure failed.") 
 
     cmds.delete(constraints)    
     cmds.delete(list(pin_groups_to_delete))
-    print "Success!"
-    return controls_to_bake # We're done here!
+    # Final check to see if the master_group is empty. If so, delete it.
+    global master_group
+    pins_exist = _get_pins()
+    if not pins_exist:
+        cmds.delete(master_group)
+    print "Successfully baked these pin groups:"
+    for pin_group in list(pin_groups_to_delete):
+        print pin_group
+    return pin_groups_to_delete # We're done here!
 
 
 # Private methods ==================================================== #
@@ -333,9 +357,11 @@ def _validate_bakerange(pins_to_bake, start_frame, end_frame):
 
 def _is_locked_or_not_keyable(controlFN, attribute):
     plug = controlFN.findPlug(attribute, False)
-    if any(plug.child(p).isLocked for p in range(plug.numChildren())):
+    if any(plug.child(p).isLocked \
+        for p in range(plug.numChildren())):
         return True
-    if not any(plug.child(p).isKeyable for p in range(plug.numChildren())):
+    if not any(plug.child(p).isKeyable \
+        for p in range(plug.numChildren())):
         return True
     for p in range(plug.numChildren()):
         plug_array = plug.child(p).connectedTo(True, False)
@@ -388,11 +414,14 @@ def _validate_selection(sel_list):
 
 
 def _get_pin_groups():
+    global master_group
     found_pin_groups = []
-    master_group = _refresh_group_setup()
-    master_group_children = cmds.listRelatives(master_group, type = 'transform') or []
-    for found_pin_group in master_group_children:
-        found_pin_groups.append(found_pin_group)
+    if cmds.objExists(master_group):
+        master_group_children = cmds.listRelatives(\
+            master_group, \
+            type = 'transform') or []
+        for found_pin_group in master_group_children:
+            found_pin_groups.append(found_pin_group)
     return found_pin_groups # Returns list
 
 
@@ -405,8 +434,6 @@ def _get_pins(pin_groups = None):
     found_pins = []
     if not pin_groups:
         pin_groups = _get_pin_groups()
-    if not pin_groups:
-        return []
     for group in pin_groups:
         pins = cmds.listRelatives(group, type = 'transform') or []
         for pin in pins:
@@ -418,12 +445,16 @@ def _validate_framerange(start_frame, end_frame):
     if start_frame == None:
         api.MGlobal.displayWarning(\
             "No start_frame supplied. Defaulting to timeline...")
-        start_frame = cmds.playbackOptions(q=True, minTime=True)
+        start_frame = cmds.playbackOptions(\
+            query = True, \
+            animationStartTime = True)
 
     if end_frame == None:
         api.MGlobal.displayWarning(\
             "No end_frame supplied. Defaulting to timeline...")
-        end_frame = cmds.playbackOptions(q=True, maxTime=True)
+        end_frame = cmds.playbackOptions(\
+            query = True, \
+            animationEndTime = True)
 
     if start_frame > end_frame:
         api.MGlobal.displayError(\
@@ -455,11 +486,15 @@ def _read_control_data(control, start_frame, end_frame):
     # I created and store the rest. But I'm lazy.
     bp_keys = []
     if 'blendParent1' in cmds.listAttr(control_name):
-        bp_key_times = _get_keys_from_obj_attribute(controlFN, 'blendParent1')
+        bp_key_times = _get_keys_from_obj_attribute(\
+            controlFN, \
+            'blendParent1')
         if bp_key_times:
             key_values = []
             for time in bp_key_times:
-                key_value = cmds.getAttr(control_name + '.blendParent1', time = time)
+                key_value = cmds.getAttr(\
+                    control_name + '.blendParent1', \
+                    time = time)
                 key_values.append(key_value)
             bp_keys = list(zip(bp_key_times, key_values))
         else:
@@ -496,7 +531,7 @@ def _get_keys_from_curve(plug):
     return [curve.input(k).value for k in range(curve.numKeys)]
 
 
-def _refresh_group_setup(group_override = None):
+def _get_master_group(group_override = None):
     global master_group
     if isinstance(group_override, str):
         master_group = group_override
@@ -507,7 +542,8 @@ def _refresh_group_setup(group_override = None):
     return master_group
 
 
-def _create_new_pin_group(master_group):
+def _create_new_pin_group():
+    master_group = _get_master_group()
     new_pin_group = cmds.createNode('transform', 
                                   name = pin_group, 
                                   parent = master_group,
@@ -546,10 +582,16 @@ def _create_locator_pin(control_data, pin_group):
     cmds.parent(locator, pin_group)
 
     for attr in ['x', 'y', 'z']:
-        cmds.setAttr(locator + '.s' + attr, keyable=False, channelBox=True)
+        cmds.setAttr(\
+            locator + '.s' + attr, \
+            keyable = False, \
+            channelBox = True)
 
     for key, value in pin_data.iteritems():
-        cmds.addAttr(locator, longName=key, **value) # kwargs ftw
+        cmds.addAttr(\
+            locator, \
+            longName = key, \
+            **value) # kwargs ftw
 
     for key, value in control_data.items():
         if isinstance(value, (str, list)):
@@ -616,9 +658,9 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
             translate_keys = [float(x) for x in translate_keys.split(' ')]
         translate_keys_baked = set(cmds.keyframe(
                                    control, 
-                                   attribute='t', 
-                                   time=(start_frame, end_frame), 
-                                   query=True) or [])
+                                   attribute = 't', 
+                                   time = (start_frame, end_frame), 
+                                   query = True) or [])
         translate_keys_to_remove = list(set(translate_keys_baked - \
                                         set(translate_keys)))
 
@@ -628,9 +670,9 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
             rotate_keys = [float(x) for x in rotate_keys.split(' ')]
         rotate_keys_baked = set(cmds.keyframe(
                                 control, 
-                                attribute='r', 
-                                time=(start_frame, end_frame), 
-                                query=True) or [])
+                                attribute = 'r', 
+                                time = (start_frame, end_frame), 
+                                query = True) or [])
         rotate_keys_to_remove = list(set(rotate_keys_baked - \
                                      set(rotate_keys)))
 
@@ -639,14 +681,17 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
             composited_keys = list(set(translate_keys + rotate_keys))
             keys_to_remove = list(set(keys_baked) - set(composited_keys))
             for key in _to_ranges(keys_to_remove):
-                cmds.cutKey(control, t=key, attribute=('t', 'r'), clear=True)
+                cmds.cutKey(control, \
+                    t = key, attribute = ('t', 'r'), clear = True)
             # for key in _to_ranges(keys_to_remove):
             #     cmds.cutKey(control, t=key, attribute='r', clear=True)    
         else:
             for key in _to_ranges(translate_keys_to_remove):
-                cmds.cutKey(control, t=key, attribute='t', clear=True)
+                cmds.cutKey(control, \
+                    t = key, attribute = 't', clear = True)
             for key in _to_ranges(rotate_keys_to_remove):
-                cmds.cutKey(control, t=key, attribute='r', clear=True)
+                cmds.cutKey(control, \
+                    t = key, attribute = 'r', clear = True)
 
         keys_baked.insert(0, keys_baked[0]-1)
         keys_baked.append(keys_baked[-1]+1)
@@ -657,7 +702,11 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
             # values = float(match.group(0).split(', ')[1])
         bp_keys_to_remove = list(set(keys_baked) - set(keys))
         for key in _to_ranges(bp_keys_to_remove):
-            cmds.cutKey(control, t=key, attribute=('blendParent1'), clear=True)
+            cmds.cutKey(\
+                control, \
+                time = key, \
+                attribute = ('blendParent1'), \
+                clear = True)
 
 
 
@@ -705,19 +754,126 @@ class View(QtWidgets.QDialog):
         self.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
-        # Build UI --------------------------------------------------- #
-        self.setLayout(QtWidgets.QGridLayout())
-        self.layout().setContentsMargins(20, 20, 20, 20)
-        self.layout().setSpacing(8)
+        # Class globals
+        self.pressPos = None
+        self.isMoving = False
+        self._callbacks = {}
+        self.width  = WIDTH
+        self.height = HEIGHT
+        self.mini_state = False
+
+        # Organizing the startup sequence
+        self.build_UI()
+        self.init_connections()
+        self.init_frame_range()
+        self._init_pin_group_list()
+
+
+
+    # Event methods -------------------------------------------------- #
+
+    def init_connections(self):
+        # Connections ------------------------------------------------ #
+        self.BTN_create_pins.clicked.connect(self.on_create_pins)
+        self.BTN_bake_pins.clicked.connect(self.on_bake_pins)
+        self.destroyed.connect(self.closeEvent)
+
+        # Listbox connections   
+        self.LST_pin_groups.itemSelectionChanged.connect(self._pass_selection_to_maya)
+        self.LST_pin_groups.itemChanged.connect(self._ui_pin_name_changed)
+
+    def init_frame_range(self):
+        spin_start = cmds.playbackOptions(\
+            query = True, \
+            animationStartTime = True)
+        spin_end   = cmds.playbackOptions(\
+            query = True, \
+            animationEndTime = True)        
+        self.SPN_start_frame.setValue(spin_start)
+        self.SPN_end_frame.setValue(spin_end)
+
+    # Build UI ------------------------------------------------------- #
+
+    def build_UI(self):
+        # Start with the stylesheet ---------------------------------- #
         self.setStyleSheet("\
-            QWidget {\
-                background-color: rgb(70, 70, 70);\
+            QWidget{\
+                background-color: rgb(70, 70, 70);  \
                 color: rgb(140, 140, 140);\
                 font: 10pt Helvetica, sans-serif;\
                 outline: 0;\
             }\
-            QLabel {\
+            QGroupBox {\
+                background-color: rgb(65, 65, 65);\
+                border: 1px solid;\
+                border-color: rgb(80, 80, 80); \
+                border-radius: 5px;\
+                margin-top: 2.5ex; \
+            }\
+            QGroupBox::title {\
+                color:rgb(120,120,120);\
+                subcontrol-origin: margin;\
+                subcontrol-position: top center; \
+                margin: 0px 4px;\
+                padding: 0px;\
+            }\
+            QLabel#headerLabel{\
                 background-color: rgb(59, 82, 125);\
+            }\
+            Line {\
+                margin: 0px;\
+                padding: 0px;\
+            }\
+            QSpinBox {\
+                padding: 0px 8px 0px 5px;\
+                background-color: rgb(50, 50, 50);\
+                border-width: 0px;\
+                border-radius: 8px;\
+                color: rgb(150, 150, 150);\
+                font: bold 12pt Helvetica, sans-serif ;\
+            }\
+            QSpinBox:focus {\
+                background-color: rgb(55, 55, 55);\
+            }\
+            QSpinBox:hover {\
+                background-color: rgb(60, 60, 60);\
+            }\
+            QSpinBox:pressed {\
+                background-color: rgb(74, 105, 129);\
+            }\
+            QRadioButton {\
+                background-color: rgb(65, 65, 65);\
+                color: rgb(180, 180, 180);\
+                border-radius:8px;\
+                padding: 4px;\
+            }\
+            QRadioButton:checked{\
+                background-color: rgb(80, 80, 80); \
+            \
+            }\
+            QRadioButton:focus {\
+                background-color: rgb(85, 85, 85);\
+            }\
+            QRadioButton:hover{\
+                background-color: rgb(90, 90, 90);\
+            }\
+            QRadioButton:pressed{\
+                background-color: rgb(74, 105, 129);\
+            }\
+            QRadioButton::indicator {\
+                width:                  8px;\
+                height:                 8px;\
+                border-radius:          6px;\
+            }\
+            QRadioButton::indicator:checked {\
+                background-color:   #05B8CC;\
+                border:             2px solid grey;\
+                border-color:       rgb(180, 180, 180);\
+            }\
+            QRadioButton::indicator:unchecked {\
+                background-color: rgb(60, 60, 60);\
+                border:                 2px solid grey;\
+                border-color: rgb(140, 140, 140);\
             }\
             QPushButton {\
                 background-color: rgb(80, 80, 80);\
@@ -740,44 +896,369 @@ class View(QtWidgets.QDialog):
             QPushButton:pressed{\
                 background-color: rgb(74, 105, 129);\
             }\
+            QPushButton[state='active']{\
+                background-color: rgb(96, 117, 79);\
+            }\
+            QPushButton[state='set']{\
+                background-color: rgb(70, 99, 91);\
+            }\
+            QPushButton[state='clear']{\
+                background-color: rgb(80, 80, 80);\
+            }\
+            QProgressBar {\
+                border: 1px solid;\
+                border-color:rgb(90,90,90);\
+                border-radius: 5px;\
+            }\
+            QProgressBar::chunk {\
+                background-color: #05B8CC;\
+                width: 20px;\
+            }\
+            QListWidget {\
+                show-decoration-selected: 1; \
+                background: rgb(65, 65, 65);    \
+                border: 1px solid grey;\
+                border-radius: 10px;\
+                padding: 6px 6px;\
+                border-color: rgb(80, 80, 80); \
+                margin-bottom: 0px;\
+                padding-right: 6px;\
+                alternate-background-color: rgb(65, 65, 65); \
+            }\
+            QListWidget:focus {\
+                background-color: rgb(60, 60, 60);\
+            }\
+            QListWidget::item {\
+                background: rgb(65, 65, 65); \
+                margin-bottom: 2px;\
+                border: 0px solid #000000;\
+                border-radius: 4px;    \
+                padding-left: 4px;\
+                margin-right: 4px;\
+                height:24px;\
+            }\
+            QListWidget::item:alternate {\
+                border: 0px solid #3c3c3c;\
+                background: rgb(62, 62, 62);\
+            }\
+            QListWidget::item:selected {\
+                background-color: #4a6981;\
+            }\
+            QListWidget::item:selected:!active {\
+                background-color: #4f718c; \
+                color: #fff;\
+            }\
+            QListWidget::item:hover {\
+                background: rgb(80, 80, 80);\
+            }\
+            QListWidget::item:selected:hover {\
+                background-color: #4f7089;\
+            }\
+            QListWidget::item::selected:pressed {\
+                background-color: #648eaf;\
+            }\
+            QScrollBar:vertical {\
+                border: 1px solid grey;\
+                border-color: rgb(90,90,90);\
+                background: rgb(60,60,60);\
+                width: 8px;\
+                padding:  0;\
+                margin-right: 0px;\
+            }\
+            QScrollBar::handle:vertical {\
+                background: rgb(90,90,90);\
+                min-height: 20px;\
+            }\
+            QScrollBar::add-line:vertical {\
+                border: 0px solid grey;\
+                background: red;\
+                height: 0px;\
+                subcontrol-position: bottom;\
+                subcontrol-origin: margin;\
+            }\
+            QScrollBar::sub-line:vertical {\
+                border: 0px solid;\
+                border-color:rgb(90,90,90);\
+                background: green;\
+                height: 0px;\
+                subcontrol-position: top;\
+                subcontrol-origin: margin;\
+            }\
+            QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical {\
+                border: 1px solid grey;\
+                width: 10px;\
+                height: 10px;\
+            }\
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {\
+                background: none;\
+            }\
+            QAbstractScrollArea::corner {\
+                background: none;\
+                border: none;\
+            }\
+            QLineEdit {\
+                color: #fff;\
+                width: 100%;\
+                background: rgb(65, 65, 65);    \
+                border: 1px solid #05B8CC;\
+                border-radius: 4px;\
+                padding: 0px 2px;\
+                height:24px;\
+            }\
+            QLineEdit:hover {\
+                width: 100%;\
+                background: rgb(65, 65, 65);    \
+                border: 1px solid #05B8CC;\
+                border-radius: 4px;\
+                padding: 0px 2px;\
+                height:24px;\
+            }\
+            QMenu {\
+                margin: 0px; /* some spacing around the menu */\
+                background: rgb(65, 65, 65);\
+                border: 1px solid rgb(115, 115, 115); \
+                padding: 8px 8px;\
+            }\
+            QMenu::item {\
+                color: rgb(180, 180, 180);\
+                padding: 4px 25px 4px 20px;\
+            }\
+            QMenu::item:selected {\
+                background: rgb(45, 45, 45);\
+                border-radius: 6px;\
+            }\
+            QMenu::separator {\
+                height: 2px;\
+                margin-left: 10px;\
+                margin-right: 5px;\
+            }\
+            QMenu::indicator {\
+                width: 13px;\
+                height: 13px;\
+            }\
             ")
-        # Header image # 
+
+        # Main layout ------------------------------------------------ #
+        self.LYT_main_grid = QtWidgets.QGridLayout()
+        self.setLayout(self.LYT_main_grid)
+        self.LYT_main_grid.setContentsMargins(0, 0, 0, 0)
+        self.LYT_main_grid.setSpacing(6)
+
+        # Header image ----------------------------------------------- #
         qpix = QtGui.QPixmap()
         qpix.loadFromData(image_data)
-        self.label = QtWidgets.QLabel()
-        self.label.setPixmap(qpix)
-        self.label.setAlignment(QtCore.Qt.AlignCenter)
-        self.layout().addWidget(self.label)
+        self.LBL_header_image = QtWidgets.QLabel()
+        self.LYT_main_grid.addWidget(self.LBL_header_image, 0, 0)
+        self.LBL_header_image.setObjectName("headerLabel")
+        self.LBL_header_image.setPixmap(qpix)
+        self.LBL_header_image.setAlignment(QtCore.Qt.AlignCenter)
+        self.LBL_header_image.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
 
-        # Create Buttons # 
+        # The main QVBoxLayout that holds everything under the header -#
+        self.LYT_main_vertical = QtWidgets.QVBoxLayout()
+        self.LYT_main_grid.addLayout(self.LYT_main_vertical, 1, 0)
+        self.LYT_main_vertical.setStretch(1,2)#(1,2,1,1,3,4,0,0)
+        self.LYT_main_vertical.setSpacing(8)
+        self.LYT_main_vertical.setContentsMargins(10, 4, 10, 10)
+
+        # Construct the start/end frame grid ------------------------- #
+        self.LYT_grid_time = QtWidgets.QGridLayout()
+        self.LYT_main_vertical.addLayout(self.LYT_grid_time)
+        self.LYT_grid_time.setContentsMargins(0, 0, 0, 2)
+        self.LYT_grid_time.setColumnStretch(1,2)
+        # - LBL_start_frame
+        self.LBL_start_frame = QtWidgets.QLabel()
+        self.LYT_grid_time.addWidget(self.LBL_start_frame, 0, 0)
+        self.LBL_start_frame.setText("Start Frame")
+        self.LBL_start_frame.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
+        self.LBL_start_frame.setMinimumSize(71, 24)
+        # - spinStartFrane
+        self.SPN_start_frame = QtWidgets.QSpinBox()
+        self.LYT_grid_time.addWidget(self.SPN_start_frame, 0, 1)
+        self.SPN_start_frame.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
+        self.SPN_start_frame.setMinimumSize(70, 24)
+        self.SPN_start_frame.setAlignment(\
+            QtCore.Qt.AlignRight | \
+            QtCore.Qt.AlignTrailing | \
+            QtCore.Qt.AlignVCenter)
+        self.SPN_start_frame.setButtonSymbols(\
+            QtWidgets.QAbstractSpinBox.NoButtons)
+        self.SPN_start_frame.setMinimum(-999999999)
+        self.SPN_start_frame.setMaximum(999999999)
+        # - spinEndFrane
+        self.SPN_end_frame = QtWidgets.QSpinBox()
+        self.LYT_grid_time.addWidget(self.SPN_end_frame, 1, 1)
+        self.SPN_end_frame.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
+        self.SPN_end_frame.setMinimumSize(70, 24)
+        self.SPN_end_frame.setAlignment(\
+            QtCore.Qt.AlignRight | \
+            QtCore.Qt.AlignTrailing | \
+            QtCore.Qt.AlignVCenter)
+        self.SPN_end_frame.setButtonSymbols(\
+            QtWidgets.QAbstractSpinBox.NoButtons)
+        self.SPN_end_frame.setMinimum(-999999999)
+        self.SPN_end_frame.setMaximum(999999999)        
+        # - LBL_end_frame
+        self.LBL_end_frame = QtWidgets.QLabel()
+        self.LYT_grid_time.addWidget(self.LBL_end_frame, 1, 0)
+        self.LBL_end_frame.setText("End Frame")
+        self.LBL_end_frame.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
+        self.LBL_end_frame.setMinimumSize(71, 24)
+
+        # Line Divider ----------------------------------------------- #
+        self.LN_top = QtWidgets.QFrame()
+        self.LYT_main_vertical.addWidget(self.LN_top)
+        self.LN_top.setFrameShape(QtWidgets.QFrame.HLine)
+        self.LN_top.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.LN_top.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum,
+            QtWidgets.QSizePolicy.Fixed)
+        
+        # Bake step option box --------------------------------------- #
+        self.GRP_options = QtWidgets.QGroupBox()
+        self.LYT_main_vertical.addWidget(self.GRP_options)
+        self.GRP_options.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
+        self.GRP_options.setMinimumSize(0, 90)
+        self.GRP_options.setTitle("Bake Options")
+
+        self.LYT_options = QtWidgets.QVBoxLayout()
+        self.GRP_options.setLayout(self.LYT_options)
+        self.LYT_options.setSpacing(6)
+        self.LYT_options.setContentsMargins(10, 12, 10, 4)
+
+        self.OPT_0_matchkeys = QtWidgets.QRadioButton()
+        self.LYT_options.addWidget(self.OPT_0_matchkeys)
+        self.OPT_0_matchkeys.setMinimumSize(0, 24)
+        self.OPT_0_matchkeys.setFocusPolicy(QtCore.Qt.WheelFocus)
+        self.OPT_0_matchkeys.setText("Match Keys")
+        self.OPT_0_matchkeys.setChecked(True)
+
+        self.LYT_step = QtWidgets.QHBoxLayout()
+        self.LYT_options.addLayout(self.LYT_step)
+        self.LYT_step.setSpacing(6)
+        self.LYT_step.setContentsMargins(0, 0, 0, 0)
+
+        self.OPT_1_bakeStep = QtWidgets.QRadioButton()
+        self.LYT_step.addWidget(self.OPT_1_bakeStep)
+        self.OPT_1_bakeStep.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Fixed)
+        self.OPT_1_bakeStep.setMinimumSize(0, 24)
+        self.OPT_1_bakeStep.setFocusPolicy(QtCore.Qt.WheelFocus)
+        self.OPT_1_bakeStep.setText("Bake step ")
+
+        self.SPN_step = QtWidgets.QSpinBox()
+        self.LYT_step.addWidget(self.SPN_step)
+        self.SPN_step.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed)
+        self.SPN_step.setMinimumSize(20, 24)
+        self.SPN_step.setAlignment(\
+            QtCore.Qt.AlignRight |\
+            QtCore.Qt.AlignTrailing |\
+            QtCore.Qt.AlignVCenter)
+        self.SPN_step.setButtonSymbols(\
+            QtWidgets.QAbstractSpinBox.NoButtons)
+        self.SPN_step.setMinimum(1)
+        self.SPN_step.setMaximum(999999999)
+        self.SPN_step.setValue(2)
+
+        # Line Divider ----------------------------------------------- #
+        self.LN_middle = QtWidgets.QFrame()
+        self.LYT_main_vertical.addWidget(self.LN_middle)
+        self.LN_middle.setFrameShape(QtWidgets.QFrame.HLine)
+        self.LN_middle.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.LN_middle.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum,
+            QtWidgets.QSizePolicy.Fixed)
+
+        # The function buttons --------------------------------------- # 
         self.BTN_create_pins = QtWidgets.QPushButton()
+        self.LYT_main_vertical.addWidget(self.BTN_create_pins)
         self.BTN_create_pins.setText("Create Pins")
         self.BTN_create_pins.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Expanding
-        )
-        self.layout().addWidget(self.BTN_create_pins)
+            QtWidgets.QSizePolicy.Preferred)
+        self.BTN_create_pins.setMinimumSize(0, 46)
+        self.BTN_create_pins.setFocusPolicy(QtCore.Qt.WheelFocus)
 
         self.BTN_bake_pins = QtWidgets.QPushButton()
+        self.LYT_main_vertical.addWidget(self.BTN_bake_pins)
         self.BTN_bake_pins.setText("Bake Pins")
         self.BTN_bake_pins.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Expanding
-        )
-        self.layout().addWidget(self.BTN_bake_pins)
+            QtWidgets.QSizePolicy.Preferred)
+        self.BTN_bake_pins.setMinimumSize(0, 46)
+        self.BTN_bake_pins.setEnabled(True)
+        self.BTN_bake_pins.setFocusPolicy(QtCore.Qt.WheelFocus)
 
-        # Connections ------------------------------------------------ #
-        self.BTN_create_pins.clicked.connect(self.on_create_pins)
-        self.BTN_bake_pins.clicked.connect(self.on_bake_pins)
-        self.destroyed.connect(self.closeEvent)
+        # Line Divider ----------------------------------------------- #
+        self.LN_bottom = QtWidgets.QFrame()
+        self.LYT_main_vertical.addWidget(self.LN_bottom)
+        self.LN_bottom.setFrameShape(QtWidgets.QFrame.HLine)
+        self.LN_bottom.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.LN_bottom.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum,
+            QtWidgets.QSizePolicy.Fixed)
 
-    # Event methods -------------------------------------------------- #
-        self.pressPos = None
-        self.isMoving = False
+        # Pin group widget ------------------------------------------- #
+        self.LST_pin_groups = QtWidgets.QListWidget()
+        self.LYT_main_vertical.addWidget(self.LST_pin_groups)
+        self.LST_pin_groups.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding)
+        self.LST_pin_groups.setMinimumSize(0, 40)
+        self.LST_pin_groups.setVerticalScrollBarPolicy(\
+            QtCore.Qt.ScrollBarAsNeeded)
+        self.LST_pin_groups.setHorizontalScrollBarPolicy(\
+            QtCore.Qt.ScrollBarAlwaysOff)
+        self.LST_pin_groups.setEditTriggers(\
+            QtWidgets.QAbstractItemView.DoubleClicked |\
+            QtWidgets.QAbstractItemView.EditKeyPressed)
+        self.LST_pin_groups.setAlternatingRowColors(True)
+        self.LST_pin_groups.setSelectionMode(\
+            QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.LST_pin_groups.setWrapping(False)
+        self.LST_pin_groups.setResizeMode(\
+            QtWidgets.QListView.Adjust)
+        self.LST_pin_groups.setLayoutMode(\
+            QtWidgets.QListView.SinglePass)
+        self.LST_pin_groups.setSpacing(0)
+        self.LST_pin_groups.setCurrentRow(-1)
+
+        # Right click menu ------------------------------------------- #
+
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)            
+        self.customContextMenuRequested.connect(self.on_context_menu)
+
+        self.popup_menu = QtWidgets.QMenu(self)
+        # self.popup_menu.addAction(QtWidgets.QAction('Options', self))
+        # self.popup_menu.addSeparator()
+        self.menu_mini = QtWidgets.QAction('Miniaturize UI', self)
+        self.popup_menu.addAction(self.menu_mini)
+        self.menu_mini.triggered.connect(self.on_menu_mini_clicked)
+        
+
+
+    # QT Event handling ---------------------------------------------- #
 
     def mousePressEvent(self, event):
         self.pressPos = event.pos()
         self.isMoving = True
+        # if event.button() == QtCore.Qt.RightButton:
+            # print "right button clicked"
 
     def mouseReleaseEvent(self, event):
         self.isMoving = False
@@ -787,10 +1268,10 @@ class View(QtWidgets.QDialog):
             self.newPos = event.pos() - self.pressPos
             self.move(self.window().pos() + self.newPos)
 
-    # QT Event handling ---------------------------------------------- #
-
     def showEvent(self, event):
         self.init_callbacks()
+        self.resize(self.width, self.height)
+        self.update()
 
     # def hideEvent(self, event):
     #     self.kill_callbacks()
@@ -800,24 +1281,183 @@ class View(QtWidgets.QDialog):
         global _view
         _view = None
 
+
     # Callback handling ---------------------------------------------- #
 
     def init_callbacks(self):
-        print "Initializing callbacks"
+        global master_group
+        if not cmds.objExists(master_group):
+            return # Only install if the master_group exists
 
-    def kill_callbacks(self):
-        print "killing all callbacks"
+        self.kill_callbacks(verbose = False)
 
-    # Widget handling ------------------------------------------------ #
+        # Monitor the changing of all node names. We'll filter out
+        # our pin_groups
+        nullObj = api.MObject()
+        self._callbacks['name_changed'] = \
+        api.MNodeMessage.addNameChangedCallback(\
+            nullObj, \
+            self._maya_node_name_changed)
+
+        # Install master_group handler ------------------------------- #
+        master_group_sel = \
+        api.MGlobal.getSelectionListByName(master_group).getDagPath(0)
+
+        self._callbacks[master_group + '_dag_added'] = \
+        api.MDagMessage.addChildAddedDagPathCallback(\
+            master_group_sel, \
+            self._pin_group_child_added)
+
+        self._callbacks[master_group + '_dag_removed'] = \
+        api.MDagMessage.addChildRemovedDagPathCallback(\
+            master_group_sel, \
+            self._pin_group_child_removed)
+
+        print "Installed %s callbacks." % master_group
+
+
+    def kill_callbacks(self, verbose = True):
+        if verbose: print "Uninstalling callbacks..."
+        for ID in self._callbacks.keys():
+            try:
+                self._callbacks[ID] = \
+                api.MMessage.removeCallback(self._callbacks[ID]) or []
+                # if verbose: print "Uninstalled %s callback." % ID
+            except:
+                if verbose: print "No more callbacks to uninstall."
+
+
+    # Callback functions --------------------------------------------- #
+
+    def _pin_group_child_added(self, child, parent, client_data):
+        cmds.evalDeferred(self._init_pin_group_list)
+
+    def _pin_group_child_removed(self, child, parent, client_data):
+        cmds.evalDeferred(self._init_pin_group_list)
+
+    def _maya_node_name_changed(self, mObj, old_name, client_data):
+        item_widget = self.LST_pin_groups.findItems(\
+            old_name, \
+            QtCore.Qt.MatchExactly)
+        if not item_widget:
+            return
+        else:
+            item_dag = api.MDagPath.getAPathTo(mObj)
+            wigData = item_widget[0].data(QtCore.Qt.UserRole)
+            if wigData == item_dag:
+                widget_data_name = wigData.fullPathName().split('|')[-1]
+                self.LST_pin_groups.blockSignals(True)
+                item_widget[0].setText(widget_data_name)
+                self.LST_pin_groups.blockSignals(False)
+
+    def _ui_pin_name_changed(self, item):
+        data = item.data(QtCore.Qt.UserRole)
+        dataFN = api.MFnDependencyNode(data.node())
+        # Prevents this from firing twice if maya doesn't like the name
+        self.LST_pin_groups.blockSignals(True)
+        dataFN.setName(item.text())
+        item.setText(data.fullPathName().split('|')[-1])
+        self.LST_pin_groups.blockSignals(False)
+
+
+    # UI handlers ---------------------------------------------------- #
+
+    def _init_pin_group_list(self):
+        '''Should be run on UI init'''
+        sel = cmds.ls(selection = True)
+        self.LST_pin_groups.clear()
+        # cmds.refresh(force=True)
+        pin_groups = _get_pin_groups()
+
+        if pin_groups:
+            for pin_group in pin_groups:
+                # print pin_group
+                new_item = QtWidgets.QListWidgetItem(pin_group)
+                mSel = api.MGlobal.getSelectionListByName(pin_group)
+                item_dag = mSel.getDagPath(0)
+                new_item.setData(QtCore.Qt.UserRole, item_dag)
+                new_item.setFlags(QtCore.Qt.ItemIsEditable |\
+                                 QtCore.Qt.ItemIsSelectable |\
+                                 QtCore.Qt.ItemIsEnabled)
+                self.LST_pin_groups.addItem(new_item)
+                if pin_group in sel:
+                    new_item.setSelected(True)
+
+            # self._buffer_list_refresh()
+            # self.updateBufferListSelection()
+
+    def _pass_selection_to_maya(self):
+        selected_items = []
+        selected_items = [x.text() for x in self.LST_pin_groups.selectedItems()]
+        #cmds.undoInfo(ock=True) # Turning undo off for the rolling selection
+        cmds.select(selected_items, replace=True)
+        #cmds.undoInfo(cck=True) # Annoying to have this flood the stack
+
+    # Main button handling ------------------------------------------- #
     
     def on_create_pins(self):
-        create_pins()
+        new_pin = create_pins(\
+            start_frame = self.SPN_start_frame.value(), \
+            end_frame = self.SPN_end_frame.value())
+        self._init_pin_group_list()
+
 
     def on_bake_pins(self):
-        bake_pins(bake_option = 0)
+        # Grab SPN_step
+        option = 0
+        if not self.OPT_0_matchkeys.isChecked():
+            option = self.SPN_step.value()
+        pin_groups_to_delete = bake_pins(\
+            bake_option = option, \
+            start_frame = self.SPN_start_frame.value(), \
+            end_frame = self.SPN_end_frame.value())
+        self._init_pin_group_list()
 
-    def print_text(self, payload):
-        print payload
+    # Sub widget handling -------------------------------------------- #
+
+    def on_context_menu(self, point):
+        # Show context menu here
+        self.popup_menu.exec_(self.mapToGlobal(point))
+
+    def on_menu_mini_clicked(self):
+        if self.mini_state == False:
+            print "Miniaturizing UI!"
+            self.LST_pin_groups.hide()
+            self.LN_bottom.hide()
+            self.LN_middle.hide()
+            self.LN_top.hide()
+            self.GRP_options.hide()
+            self.LBL_start_frame.hide()
+            self.LBL_end_frame.hide()
+            self.SPN_start_frame.hide()
+            self.SPN_end_frame.hide()
+            self.width = self.geometry().width()
+            self.height = self.geometry().height()
+            self.mini_state = True
+            self.menu_mini.setText("Embiggen UI")
+        elif self.mini_state == True:
+            print "Embiggening UI!"
+            self.LST_pin_groups.show()
+            self.LN_bottom.show()
+            self.LN_middle.show()
+            self.LN_top.show()
+            self.GRP_options.show()
+            self.LBL_start_frame.show()
+            self.LBL_end_frame.show()
+            self.SPN_start_frame.show()
+            self.SPN_end_frame.show()
+            self.mini_state = False
+            self.menu_mini.setText("Miniaturize UI")
+        # self.update()
+        QtCore.QTimer.singleShot(0, self.resize_window)
+
+    def resize_window(self):
+        # self.resize(180, 180)
+        if self.mini_state == False:
+            self.resize(self.width, self.height)
+        elif self.mini_state == True:
+            self.resize(self.minimumSizeHint())
+
 
 # Data =============================================================== #
 
