@@ -1,21 +1,25 @@
 ## Animation Pin Tool
 
+<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/yEG1920.png">
 The purpose of this tool is you *pin* your controls in place while you move dependent controls/nodes on the rig.
 Ie, pin the chest while you move the hips. 
 
 Or better yet, pin **all** the IK controls while you move the base node (the one that sets the character's x, y, z). 
 
-<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/E4PxyfL.png">
+You can get crazier and even reframe the animation of your character relative to your moving camera. Experiment. Go crazy!
 
-Right now, the UI is being overhauled, so all you get are two buttons. 
+The UI has a right-click menu to be able to miniaturize it. RMB anywhere to access the option.
 
-It will default the bake range to be your timeline edit range (the inner values). If you're saavy, you can feed the create function a start/end frame to mess with it. Just check it out.
 
-When you bake the pins, it will remember the start/end frame from the creation procedure. Unless you want it to only bake a certain region within that - you could highlight part of your timeline and use it that way as well.
+It will default the bake range to be your timeline edit range (the inner values). 
 
-The bake option defaults to baking back down to your previous keys. Right now it remembers the keys on rotates and translates separately (as an experiment) and will clean the bake using those as a reference.
+When you bake the pins, it will remember the start/end frame from the creation procedure. Unless you want it to only bake a certain region within that - you could highlight select part of your timeline and use it that way as well.
 
-I think I might need to default to compositing translate and rotate keys to maintain accuracy. But for now, give it a shot and see if it's useful.
+The bake option defaults to baking back down to your previous keys. Right now it remembers the keys on rotates and translates and composites the new poses on those frames by keying all transforms together. IE, it will flatten sparse rotates and translates. By default, match keys will remember the empty space between your keys and delete the extra keys created by the baking process.
+
+A lot of it is in flux, but the tool does what I mean for it to do. If you have any ideas, let me know. For now, give it a shot and see if it's useful.
+
+
 
 ---
 **[Installation](#installation)**
@@ -45,10 +49,12 @@ animPin.show()
 
 To execute the methods without a UI, use these python commands:
 
+If you're saavy and you want to use the python commands, you can feed the create function a start/end frame to mess with it. Start by feeding it the variables, start_frame = # and end_frame = #. Check it out.
+
 Create:
 ```python
 import animPin as animPin
-animPin.create_pins() # To create the pins based off your selection
+animPin.create_pins(start_frame = 0, end_frame = 420)
 ```
 
 Bake:
