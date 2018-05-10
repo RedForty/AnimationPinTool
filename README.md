@@ -1,6 +1,6 @@
 ## Animation Pin Tool
 
-<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/yEG1920.png">
+<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/0fdlRIQ.png">
 The purpose of this tool is you *pin* your controls in place while you move dependent controls/nodes on the rig.
 Ie, pin the chest while you move the hips. 
 
@@ -39,7 +39,7 @@ The other files do not matter.
 
 **[Usage](#usage)**
 
-The pull up a quick UI, Make this a <b>python</b> button on your shelf. 
+To pull up a quick UI, Make this a <b>python</b> button on your shelf. 
 
 ```python
 # Python command to show the UI
@@ -61,6 +61,8 @@ Bake:
 ```python
 animPin.bake_pins(bake_option = 0) # To bake the selected pin groups
 ```
+
+---
 
 **[Warnings](#warnings)**
 
