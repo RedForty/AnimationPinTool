@@ -28,14 +28,16 @@ import maya.api.OpenMaya as api
 import maya.api.OpenMayaAnim as anim
 import maya.OpenMayaUI as mui
 
-try:
-    import sip # Try PyQt4 or 5
-except ImportError:
-    import shiboken  # Do Pyside or Pyside2
-
 # Qt is a project by Marcus Ottosson-> https://github.com/mottosso/Qt.py
 from Qt import QtGui, QtCore, QtCompat, QtWidgets, __binding__
 # from Qt.QtGui import QPen, QColor, QBrush, QLinearGradient
+
+if "PyQt" == __binding__:
+    import sip
+elif "PySide" == __binding__:
+    import shiboken as shiboken  # Do Pyside 
+elif "PySide2" == __binding__:
+    import shiboken2 as shiboken # You're on Maya 2018, aren't you?
 
 import base64
 import itertools
@@ -111,6 +113,24 @@ def undo(func):
             raise # will raise original error            
         finally:
             cmds.undoInfo(closeChunk = True)
+            # cmds.undo()
+
+    return wrap
+
+
+def noUndo(func):
+    ''' 
+    Decorator - open/close undo chunk 
+    '''
+    @wraps(func)
+    def wrap(*args, **kwargs):
+        cmds.undoInfo(stateWithoutFlush = False)
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            raise # will raise original error            
+        finally:
+            cmds.undoInfo(stateWithoutFlush = True)
             # cmds.undo()
 
     return wrap
@@ -648,7 +668,7 @@ def _wrap_instance(ptr, base=None):
 
 # Decorated methods ================================================== #
 
-# @undo
+# @undo # Nevermind, the entire bake procedure is contained.
 def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True):
     for pin in pins_to_bake:
         control = cmds.getAttr(pin + '.control')
@@ -745,7 +765,7 @@ class View(QtWidgets.QDialog):
         self.setParent(self.parent)
         self.setWindowFlags(
             QtCore.Qt.Dialog |
-            QtCore.Qt.WindowSystemMenuHint #| # Remove the ? button
+            QtCore.Qt.WindowCloseButtonHint #| # Remove the ? button
             # QtCore.Qt.WindowStaysOnTopHint
         )
         self.setObjectName('AnimPin')
@@ -800,7 +820,7 @@ class View(QtWidgets.QDialog):
             QWidget{\
                 background-color: rgb(70, 70, 70);  \
                 color: rgb(140, 140, 140);\
-                font: 10pt Helvetica, sans-serif;\
+                font: 10pt Arial, Sans-serif;\
                 outline: 0;\
             }\
             QGroupBox {\
@@ -830,7 +850,7 @@ class View(QtWidgets.QDialog):
                 border-width: 0px;\
                 border-radius: 8px;\
                 color: rgb(150, 150, 150);\
-                font: bold 12pt Helvetica, sans-serif ;\
+                font: bold 14pt Sans-serif ;\
             }\
             QSpinBox:focus {\
                 background-color: rgb(55, 55, 55);\
@@ -1283,12 +1303,9 @@ class View(QtWidgets.QDialog):
 
 
     # Callback handling ---------------------------------------------- #
-
+    @noUndo
     def init_callbacks(self):
-        global master_group
-        if not cmds.objExists(master_group):
-            return # Only install if the master_group exists
-
+        ''' Get all callbacks installed '''
         self.kill_callbacks(verbose = False)
 
         # Monitor the changing of all node names. We'll filter out
@@ -1300,6 +1317,10 @@ class View(QtWidgets.QDialog):
             self._maya_node_name_changed)
 
         # Install master_group handler ------------------------------- #
+        global master_group
+        if not cmds.objExists(master_group):
+            return # Only install if the master_group exists
+
         master_group_sel = \
         api.MGlobal.getSelectionListByName(master_group).getDagPath(0)
 
@@ -1336,13 +1357,25 @@ class View(QtWidgets.QDialog):
         cmds.evalDeferred(self._init_pin_group_list)
 
     def _maya_node_name_changed(self, mObj, old_name, client_data):
+        global master_group
+        item_dag = api.MDagPath.getAPathTo(mObj)
+
+        if old_name == master_group:
+            result = cmds.confirmDialog(\
+                backgroundColor = [0.85882, 0.19608, 0.03137],
+                icon = "critical",
+                title = 'WAIT!',
+                message = 'You renamed the animPin master group. '
+                          'This breaks everything.',
+                messageAlign = "center",
+                button = ["I promise I'll undo it!"])
+
         item_widget = self.LST_pin_groups.findItems(\
             old_name, \
             QtCore.Qt.MatchExactly)
         if not item_widget:
             return
         else:
-            item_dag = api.MDagPath.getAPathTo(mObj)
             wigData = item_widget[0].data(QtCore.Qt.UserRole)
             if wigData == item_dag:
                 widget_data_name = wigData.fullPathName().split('|')[-1]
@@ -1362,8 +1395,10 @@ class View(QtWidgets.QDialog):
 
     # UI handlers ---------------------------------------------------- #
 
+    @noUndo # Without noundo, it would introduce empty undo calls
     def _init_pin_group_list(self):
         '''Should be run on UI init'''
+        # #####
         sel = cmds.ls(selection = True)
         self.LST_pin_groups.clear()
         # cmds.refresh(force=True)
@@ -1386,6 +1421,7 @@ class View(QtWidgets.QDialog):
             # self._buffer_list_refresh()
             # self.updateBufferListSelection()
 
+
     def _pass_selection_to_maya(self):
         selected_items = []
         selected_items = [x.text() for x in self.LST_pin_groups.selectedItems()]
@@ -1399,6 +1435,8 @@ class View(QtWidgets.QDialog):
         new_pin = create_pins(\
             start_frame = self.SPN_start_frame.value(), \
             end_frame = self.SPN_end_frame.value())
+
+        self.init_callbacks()
         self._init_pin_group_list()
 
 
