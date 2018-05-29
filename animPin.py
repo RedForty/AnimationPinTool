@@ -354,7 +354,7 @@ def _validate_bakerange(pins_to_bake, start_frame, end_frame):
                          q=True,
                          range=True)
                         )
-    selected_range = [int(x) for x in selected_range.strip('"').split(':')]
+    selected_range = [float(x) for x in selected_range.strip('"').split(':')]
     if not selected_range[1] - 1 == selected_range[0]:
         start_frame, end_frame = selected_range
 
@@ -398,6 +398,11 @@ def _validate_selection(sel_list):
     validated_sel_list = api.MSelectionList()
 
     for i in range(sel_list.length()):
+        try:
+            dag = sel_list.getDagPath(i)
+        except TypeError:
+            continue # Quietly skip non-dag nodes
+
         control_dep = sel_list.getDependNode(i)
         controlFN = api.MFnDependencyNode(control_dep)
         control_name = controlFN.name()
@@ -414,6 +419,9 @@ def _validate_selection(sel_list):
                 "Node '%s' is a pin! " \
                 "Skipping..." % control_name)
             continue
+
+        if 'animation' in controlFN.classification(controlFN.typeName):
+            continue # Quietly ignore animation curves
 
         if not controlFN.typeName in ['transform', 'joint', 'ikHandle']:
             api.MGlobal.displayError(\
@@ -674,25 +682,54 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
         control = cmds.getAttr(pin + '.control')
         # Snipe translate keys
         translate_keys = cmds.getAttr(pin + '.translate_keys') or []
+        translate_keys_baked = set(cmds.keyframe(
+                                   control,
+                                   attribute = 't',
+                                   time = (start_frame, end_frame),
+                                   query = True) or [])
         if translate_keys:
             translate_keys = [float(x) for x in translate_keys.split(' ')]
-        translate_keys_baked = set(cmds.keyframe(
-                                   control, 
-                                   attribute = 't', 
-                                   time = (start_frame, end_frame), 
-                                   query = True) or [])
+            for key in translate_keys:
+                if not key.is_integer():
+                    for attribute in ['tx', 'ty', 'tz']:
+                        value = cmds.keyframe(
+                                    control,
+                                    at=attribute,
+                                    t=(key, ),
+                                    q=True,
+                                    eval=True)
+                        cmds.setKeyframe(
+                                    control,
+                                    at=attribute,
+                                    t=key,
+                                    v=value[0])
+                    translate_keys_baked.add(key)
         translate_keys_to_remove = list(set(translate_keys_baked - \
                                         set(translate_keys)))
-
         # Snipe rotate keys
         rotate_keys = cmds.getAttr(pin + '.rotate_keys') or []
+        rotate_keys_baked = set(cmds.keyframe(
+                                control,
+                                attribute = 'r',
+                                time = (start_frame, end_frame),
+                                query = True) or [])
         if rotate_keys:
             rotate_keys = [float(x) for x in rotate_keys.split(' ')]
-        rotate_keys_baked = set(cmds.keyframe(
-                                control, 
-                                attribute = 'r', 
-                                time = (start_frame, end_frame), 
-                                query = True) or [])
+            for key in rotate_keys:
+                if not key.is_integer():
+                    for attribute in ['rx', 'ry', 'rz']:
+                        value = cmds.keyframe(
+                                    control,
+                                    at=attribute,
+                                    t=(key, ),
+                                    q=True,
+                                    eval=True)
+                        cmds.setKeyframe(
+                                    control,
+                                    at=attribute,
+                                    t=key,
+                                    v=value[0])
+                    rotate_keys_baked.add(key)
         rotate_keys_to_remove = list(set(rotate_keys_baked - \
                                      set(rotate_keys)))
 
@@ -700,11 +737,10 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
         if composite == True:
             composited_keys = list(set(translate_keys + rotate_keys))
             keys_to_remove = list(set(keys_baked) - set(composited_keys))
-            for key in _to_ranges(keys_to_remove):
+            # for key in _to_ranges(keys_to_remove): # Had to remove to make room for floats for now
+            for key in keys_to_remove:
                 cmds.cutKey(control, \
-                    t = key, attribute = ('t', 'r'), clear = True)
-            # for key in _to_ranges(keys_to_remove):
-            #     cmds.cutKey(control, t=key, attribute='r', clear=True)    
+                    t = (key, ), attribute = ('t', 'r'), clear = True)
         else:
             for key in _to_ranges(translate_keys_to_remove):
                 cmds.cutKey(control, \
@@ -727,8 +763,6 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
                 time = key, \
                 attribute = ('blendParent1'), \
                 clear = True)
-
-
 
     return True
 
@@ -1358,7 +1392,10 @@ class View(QtWidgets.QDialog):
 
     def _maya_node_name_changed(self, mObj, old_name, client_data):
         global master_group
-        item_dag = api.MDagPath.getAPathTo(mObj)
+        try:
+            item_dag = api.MDagPath.getAPathTo(mObj)
+        except:
+            return
 
         if old_name == master_group:
             result = cmds.confirmDialog(\
@@ -1432,6 +1469,7 @@ class View(QtWidgets.QDialog):
     # Main button handling ------------------------------------------- #
     
     def on_create_pins(self):
+        self.kill_callbacks(verbose = False)
         new_pin = create_pins(\
             start_frame = self.SPN_start_frame.value(), \
             end_frame = self.SPN_end_frame.value())
