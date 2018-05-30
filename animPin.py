@@ -50,7 +50,7 @@ import re # I'm so sorry
 WIDTH = 180
 HEIGHT = 462 
 _view = None
-ap_prefix= '_pin'
+ap_suffix= '_pin'
 pin_group = 'pin_group#'
 master_group = 'animPins_group'
 locator_scale = 10 # Season to taste - depends on your rig size
@@ -180,6 +180,8 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
         locators.append(locator)
         constraint_node = cmds.parentConstraint(control_name, locator)[0]
         constraints.append(constraint_node)
+        cmds.setKeyframe(locator)
+        cmds.setAttr(locator + '.blendParent1', 1)
 
     # Do magic ------------------------------------------------------- #
     results = _do_bake(locators, start_frame, end_frame)
@@ -293,10 +295,11 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
     success = _do_bake(\
         controls_to_bake, \
         start_frame, \
-        end_frame, sample)
+        end_frame, \
+        sample)
     if not success:
         raise ValueError("Bake failed.")
-    cmds.refresh() # Check it out
+    # cmds.refresh() # Check it out
 
     for control, bp_keys in blendParents_to_restore.items():
         for match in tuple_rex.finditer(bp_keys):
@@ -407,7 +410,7 @@ def _validate_selection(sel_list):
         controlFN = api.MFnDependencyNode(control_dep)
         control_name = controlFN.name()
 
-        pinned_control = control_name + ap_prefix
+        pinned_control = control_name + ap_suffix
         if pinned_control in current_pins:
             api.MGlobal.displayError(\
                 "Node '%s' is already pinned! " \
@@ -605,7 +608,7 @@ def _create_locator_pin(control_data, pin_group):
     # global pin_data # Do we need this?
     control_name = control_data['control']
 
-    locator = cmds.spaceLocator(name = control_name + ap_prefix)[0]
+    locator = cmds.spaceLocator(name = control_name + ap_suffix)[0]
     cmds.setAttr(locator + ".scale", *[locator_scale]*3) # Unpack * 3
     cmds.parent(locator, pin_group)
 
@@ -689,21 +692,11 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
                                    query = True) or [])
         if translate_keys:
             translate_keys = [float(x) for x in translate_keys.split(' ')]
-            for key in translate_keys:
+            float_translate_keys = translate_keys[:]
+            for key in float_translate_keys:
                 if not key.is_integer():
-                    for attribute in ['tx', 'ty', 'tz']:
-                        value = cmds.keyframe(
-                                    control,
-                                    at=attribute,
-                                    t=(key, ),
-                                    q=True,
-                                    eval=True)
-                        cmds.setKeyframe(
-                                    control,
-                                    at=attribute,
-                                    t=key,
-                                    v=value[0])
-                    translate_keys_baked.add(key)
+                    translate_keys.remove(key)
+                    translate_keys.append(int(round(key)))
         translate_keys_to_remove = list(set(translate_keys_baked - \
                                         set(translate_keys)))
         # Snipe rotate keys
@@ -715,21 +708,11 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
                                 query = True) or [])
         if rotate_keys:
             rotate_keys = [float(x) for x in rotate_keys.split(' ')]
-            for key in rotate_keys:
+            float_rotate_keys = rotate_keys[:]
+            for key in float_rotate_keys:
                 if not key.is_integer():
-                    for attribute in ['rx', 'ry', 'rz']:
-                        value = cmds.keyframe(
-                                    control,
-                                    at=attribute,
-                                    t=(key, ),
-                                    q=True,
-                                    eval=True)
-                        cmds.setKeyframe(
-                                    control,
-                                    at=attribute,
-                                    t=key,
-                                    v=value[0])
-                    rotate_keys_baked.add(key)
+                    rotate_keys.remove(key)
+                    rotate_keys.append(int(round(key)))                    
         rotate_keys_to_remove = list(set(rotate_keys_baked - \
                                      set(rotate_keys)))
 
@@ -779,10 +762,17 @@ def _do_bake(nodes_to_bake, start_frame, end_frame, sample = 1):
                          simulation = True,
                          time = (start_frame, end_frame),
                          sampleBy = sample,
-                         disableImplicitControl = False,
+                         oversamplingRate = 1,
+                         disableImplicitControl = True,
                          preserveOutsideKeys = True,
+                         at = ("tx", "ty", "tz", "rx", "ry", "rz", "blendParent1"),
+                         sparseAnimCurveBake = False,
+                         removeBakedAttributeFromLayer = False,
+                         removeBakedAnimFromLayer = False,
+                         bakeOnOverrideLayer = False,
                          minimizeRotation = True,
-                         at = ("tx", "ty", "tz", "rx", "ry", "rz")
+                         controlPoints = False,
+                         shape = True
                         )
         return True
     except:
@@ -1534,6 +1524,11 @@ class View(QtWidgets.QDialog):
         elif self.mini_state == True:
             self.resize(self.minimumSizeHint())
 
+
+# class Vividict(dict):
+#     def __missing__(self, key):
+#         value = self[key] = type(self)()
+#         return value
 
 # Data =============================================================== #
 
