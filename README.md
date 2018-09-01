@@ -1,6 +1,6 @@
 ## Animation Pin Tool
 
-<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/0fdlRIQ.png">
+<img align="left" style="float: left; padding-right: 20px" src="https://i.imgur.com/CBqXf93.png">
 The purpose of this tool is you *pin* your controls in place while you move dependent controls/nodes on the rig.
 Ie, pin the chest while you move the hips. 
 
