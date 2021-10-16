@@ -2,8 +2,8 @@
 # -------------------------------------------------------------------- #
 
 __author__  = "Daniel Klug"
-__version__ = "1.30"
-__date__    = "08-31-2018"
+__version__ = "1.50"
+__date__    = "10-15-2021"
 __email__   = "daniel@redforty.com"
 
 # -------------------------------------------------------------------- #
@@ -13,7 +13,7 @@ Place both files in your maya/scripts folder, then restart Maya
 
 Usage:
 To launch the UI, use this python command:
-import animPin as animPin; animPin.show()
+import animPin; animPin.UI()
 
 By command line from within the script editor:
 import animPin as animPin; animPin.create_pins() # To create pins
@@ -35,10 +35,11 @@ from Qt import QtGui, QtCore, QtCompat, QtWidgets, __binding__
 if "PyQt" == __binding__:
     import sip
 elif "PySide" == __binding__:
-    import shiboken as shiboken  # Do Pyside 
+    import shiboken as shiboken  # Do Pyside
 elif "PySide2" == __binding__:
     import shiboken2 as shiboken # You're on Maya 2018, aren't you?
 
+import time
 import base64
 import itertools
 from collections import OrderedDict
@@ -48,7 +49,7 @@ import re # I'm so sorry
 # Globals ============================================================ #
 
 WIDTH = 180
-HEIGHT = 462 
+HEIGHT = 462
 _view = None
 ap_suffix= '_pin'
 pin_group = 'pin_group#'
@@ -71,19 +72,33 @@ pin_data = OrderedDict([
 aPlayBackSliderPython = mel.eval('$tmpVar=$gPlayBackSlider')
 tuple_rex = re.compile("([0-9]+\.[0-9]+\, [0-9]+\.[0-9]+)")
 
+# Developer section ================================================== #
+if __name__ == '__main__':
+    try:
+        AnimPinUI.stop() #pylint:disable=E0601
+    except:
+        pass
+
 # Decorators ========================================================= #
 
-def viewportOff(func):
+def viewport_off(func):
     """
-    Decorator - turn off Maya display while func is running.
-    if func will fail, the error will be raised after.
+    Decorator - turn off Maya display while func is running. if func fails, the error will be raised after.
     """
     @wraps(func)
     def wrap( *args, **kwargs ):
 
+        parallel = False
+        if 'parallel' in cmds.evaluationManager(q=True, mode=True):
+            cmds.evaluationManager(mode='off')
+            parallel = True
+            print "Turning off Parallel evaluation..."
         # Turn $gMainPane Off:
         mel.eval("paneLayout -e -manage false $gMainPane")
         cmds.refresh(suspend=True)
+        # Hide the timeslider
+        mel.eval("setTimeSliderVisible 0;")
+
 
         # Decorator will try/except running the function.
         # But it will always turn on the viewport at the end.
@@ -93,16 +108,20 @@ def viewportOff(func):
         except Exception:
             raise # will raise original error
         finally:
-            mel.eval("paneLayout -e -manage true $gMainPane")
             cmds.refresh(suspend=False)
+            mel.eval("setTimeSliderVisible 1;")
+            if parallel:
+                cmds.evaluationManager(mode='parallel')
+                print "Turning on Parallel evaluation..."
+            mel.eval("paneLayout -e -manage true $gMainPane")
             cmds.refresh()
 
     return wrap
 
 
 def undo(func):
-    ''' 
-    Decorator - open/close undo chunk 
+    '''
+    Decorator - open/close undo chunk
     '''
     @wraps(func)
     def wrap(*args, **kwargs):
@@ -110,7 +129,7 @@ def undo(func):
         try:
             return func(*args, **kwargs)
         except Exception:
-            raise # will raise original error            
+            raise # will raise original error
         finally:
             cmds.undoInfo(closeChunk = True)
             # cmds.undo()
@@ -119,8 +138,8 @@ def undo(func):
 
 
 def noUndo(func):
-    ''' 
-    Decorator - open/close undo chunk 
+    '''
+    Decorator - open/close undo chunk
     '''
     @wraps(func)
     def wrap(*args, **kwargs):
@@ -128,7 +147,7 @@ def noUndo(func):
         try:
             return func(*args, **kwargs)
         except Exception:
-            raise # will raise original error            
+            raise # will raise original error
         finally:
             cmds.undoInfo(stateWithoutFlush = True)
             # cmds.undo()
@@ -146,6 +165,13 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
     group_override = None
     '''
     # Validate input ------------------------------------------------- #
+
+    current_state = None
+    if cmds.optionVar(exists='animBlendingOpt'):
+        current_state = cmds.optionVar(query='animBlendingOpt')
+    if not current_state:
+        cmds.error('Animation blending preference is NOT SET!')
+        return None
 
     sel_list = _get_selectionList(selection)
     controls = _validate_selection(sel_list)
@@ -238,7 +264,7 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
 
 @undo
 def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame = None):
-    ''' 
+    '''
     Bake options
     '''
     if not pin_groups:
@@ -316,9 +342,9 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
             start_frame, \
             end_frame)
         if not success:
-            raise ValueError("match_keys_procedure failed.") 
+            raise ValueError("match_keys_procedure failed.")
 
-    cmds.delete(constraints)    
+    cmds.delete(constraints)
     cmds.delete(list(pin_groups_to_delete))
     # Final check to see if the master_group is empty. If so, delete it.
     global master_group
@@ -423,8 +449,9 @@ def _validate_selection(sel_list):
                 "Skipping..." % control_name)
             continue
 
-        if 'animation' in controlFN.classification(controlFN.typeName):
-            continue # Quietly ignore animation curves
+        # Had to comment this out. Some controls _are_ joints.
+        # if 'animation' in controlFN.classification(controlFN.typeName):
+        #     continue # Quietly ignore animation curves
 
         if not controlFN.typeName in ['transform', 'joint', 'ikHandle']:
             api.MGlobal.displayError(\
@@ -567,16 +594,16 @@ def _get_master_group(group_override = None):
     if isinstance(group_override, str):
         master_group = group_override
     if not cmds.objExists(master_group):
-        master_group = cmds.createNode('transform', 
-                                   name = master_group, 
+        master_group = cmds.createNode('transform',
+                                   name = master_group,
                                    skipSelect = True)
     return master_group
 
 
 def _create_new_pin_group():
     master_group = _get_master_group()
-    new_pin_group = cmds.createNode('transform', 
-                                  name = pin_group, 
+    new_pin_group = cmds.createNode('transform',
+                                  name = pin_group,
                                   parent = master_group,
                                   skipSelect = True)
     return new_pin_group
@@ -681,15 +708,11 @@ def _wrap_instance(ptr, base=None):
 
 # @undo # Nevermind, the entire bake procedure is contained.
 def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True):
+    print 'matching between {0} and {1}'.format(start_frame, end_frame)
     for pin in pins_to_bake:
         control = cmds.getAttr(pin + '.control')
         # Snipe translate keys
         translate_keys = cmds.getAttr(pin + '.translate_keys') or []
-        translate_keys_baked = set(cmds.keyframe(
-                                   control,
-                                   attribute = 't',
-                                   time = (start_frame, end_frame),
-                                   query = True) or [])
         if translate_keys:
             translate_keys = [float(x) for x in translate_keys.split(' ')]
             float_translate_keys = translate_keys[:]
@@ -697,22 +720,29 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
                 if not key.is_integer():
                     translate_keys.remove(key)
                     translate_keys.append(int(round(key)))
+
+        translate_keys_baked = set(cmds.keyframe(
+                                   control,
+                                   attribute = 't',
+                                   time = (min(translate_keys or [start_frame]), max(translate_keys or [end_frame])),
+                                   query = True) or [])
         translate_keys_to_remove = list(set(translate_keys_baked - \
                                         set(translate_keys)))
         # Snipe rotate keys
         rotate_keys = cmds.getAttr(pin + '.rotate_keys') or []
-        rotate_keys_baked = set(cmds.keyframe(
-                                control,
-                                attribute = 'r',
-                                time = (start_frame, end_frame),
-                                query = True) or [])
         if rotate_keys:
             rotate_keys = [float(x) for x in rotate_keys.split(' ')]
             float_rotate_keys = rotate_keys[:]
             for key in float_rotate_keys:
                 if not key.is_integer():
                     rotate_keys.remove(key)
-                    rotate_keys.append(int(round(key)))                    
+                    rotate_keys.append(int(round(key)))
+
+        rotate_keys_baked = set(cmds.keyframe(
+                                control,
+                                attribute = 'r',
+                                time = (min(rotate_keys or [start_frame]), max(rotate_keys or [end_frame])),
+                                query = True) or [])
         rotate_keys_to_remove = list(set(rotate_keys_baked - \
                                      set(rotate_keys)))
 
@@ -749,7 +779,7 @@ def _match_keys_procedure(pins_to_bake, start_frame, end_frame, composite = True
 
     return True
 
-@viewportOff
+@viewport_off
 def _do_bake(nodes_to_bake, start_frame, end_frame, sample = 1):
     '''
     nodes: list
@@ -758,33 +788,53 @@ def _do_bake(nodes_to_bake, start_frame, end_frame, sample = 1):
     '''
     try:
         cmds.bakeResults(
-                         nodes_to_bake,
-                         simulation = True,
-                         time = (start_frame, end_frame),
-                         sampleBy = sample,
-                         oversamplingRate = 1,
-                         disableImplicitControl = True,
-                         preserveOutsideKeys = True,
-                         at = ("tx", "ty", "tz", "rx", "ry", "rz", "blendParent1"),
-                         sparseAnimCurveBake = False,
-                         removeBakedAttributeFromLayer = False,
-                         removeBakedAnimFromLayer = False,
-                         bakeOnOverrideLayer = False,
-                         minimizeRotation = True,
-                         controlPoints = False,
-                         shape = True
-                        )
+            nodes_to_bake,
+            simulation = True,
+            time = (start_frame, end_frame),
+            sampleBy = sample,
+            oversamplingRate = 1,
+            disableImplicitControl = True,
+            preserveOutsideKeys = True,
+            at = ("tx", "ty", "tz", "rx", "ry", "rz", "blendParent1"),
+            sparseAnimCurveBake = False,
+            removeBakedAttributeFromLayer = False,
+            removeBakedAnimFromLayer = False,
+            bakeOnOverrideLayer = False,
+            minimizeRotation = True,
+            controlPoints = False,
+            shape = True
+            )
         return True
     except:
         return False
 
 # Classes ============================================================ #
 
-class View(QtWidgets.QDialog):
-    """docstring for View"""
+class AnimPinUI(QtWidgets.QDialog):
+    """docstring for UI"""
+    
+    UI_INSTANCE = None
+
+    @classmethod
+    def run(cls):
+        if not cls.UI_INSTANCE:
+            cls.UI_INSTANCE = AnimPinUI()
+
+        if cls.UI_INSTANCE.isHidden():
+            cls.UI_INSTANCE.show()
+        else:
+            cls.UI_INSTANCE.raise_()
+            cls.UI_INSTANCE.activateWindow()
+    
+    @classmethod
+    def stop(cls):
+        if cls.UI_INSTANCE:
+            cls.UI_INSTANCE.close()
+            # cls.UI_INSTANCE.deleteLater()
+            cls.UI_INSTANCE = None
 
     def __init__(self, parent = None): #_get_maya_window()):
-        super(View, self).__init__(parent)
+        super(AnimPinUI, self).__init__(parent)
         self.parent = _get_maya_window()
         self.setParent(self.parent)
         self.setWindowFlags(
@@ -818,11 +868,12 @@ class View(QtWidgets.QDialog):
 
     def init_connections(self):
         # Connections ------------------------------------------------ #
+        self.BTN_select_space.clicked.connect(self.on_select_space)
         self.BTN_create_pins.clicked.connect(self.on_create_pins)
         self.BTN_bake_pins.clicked.connect(self.on_bake_pins)
         self.destroyed.connect(self.closeEvent)
 
-        # Listbox connections   
+        # Listbox connections
         self.LST_pin_groups.itemSelectionChanged.connect(self._pass_selection_to_maya)
         self.LST_pin_groups.itemChanged.connect(self._ui_pin_name_changed)
 
@@ -832,7 +883,7 @@ class View(QtWidgets.QDialog):
             animationStartTime = True)
         spin_end   = cmds.playbackOptions(\
             query = True, \
-            animationEndTime = True)        
+            animationEndTime = True)
         self.SPN_start_frame.setValue(spin_start)
         self.SPN_end_frame.setValue(spin_end)
 
@@ -840,247 +891,246 @@ class View(QtWidgets.QDialog):
 
     def build_UI(self):
         # Start with the stylesheet ---------------------------------- #
-        self.setStyleSheet("\
-            QWidget{\
-                background-color: rgb(70, 70, 70);  \
-                color: rgb(140, 140, 140);\
-                font: 10pt Arial, Sans-serif;\
-                outline: 0;\
-            }\
-            QGroupBox {\
-                background-color: rgb(65, 65, 65);\
-                border: 1px solid;\
-                border-color: rgb(80, 80, 80); \
-                border-radius: 5px;\
-                margin-top: 2.5ex; \
-            }\
-            QGroupBox::title {\
-                color:rgb(120,120,120);\
-                subcontrol-origin: margin;\
-                subcontrol-position: top center; \
-                margin: 0px 4px;\
-                padding: 0px;\
-            }\
-            QLabel#headerLabel{\
-                background-color: rgb(59, 82, 125);\
-            }\
-            Line {\
-                margin: 0px;\
-                padding: 0px;\
-            }\
-            QSpinBox {\
-                padding: 0px 8px 0px 5px;\
-                background-color: rgb(50, 50, 50);\
-                border-width: 0px;\
-                border-radius: 8px;\
-                color: rgb(150, 150, 150);\
-                font: bold 14pt Sans-serif ;\
-            }\
-            QSpinBox:focus {\
-                background-color: rgb(55, 55, 55);\
-            }\
-            QSpinBox:hover {\
-                background-color: rgb(60, 60, 60);\
-            }\
-            QSpinBox:pressed {\
-                background-color: rgb(74, 105, 129);\
-            }\
-            QRadioButton {\
-                background-color: rgb(65, 65, 65);\
-                color: rgb(180, 180, 180);\
-                border-radius:8px;\
-                padding: 4px;\
-            }\
-            QRadioButton:checked{\
-                background-color: rgb(80, 80, 80); \
-            \
-            }\
-            QRadioButton:focus {\
-                background-color: rgb(85, 85, 85);\
-            }\
-            QRadioButton:hover{\
-                background-color: rgb(90, 90, 90);\
-            }\
-            QRadioButton:pressed{\
-                background-color: rgb(74, 105, 129);\
-            }\
-            QRadioButton::indicator {\
-                width:                  8px;\
-                height:                 8px;\
-                border-radius:          6px;\
-            }\
-            QRadioButton::indicator:checked {\
-                background-color:   #05B8CC;\
-                border:             2px solid grey;\
-                border-color:       rgb(180, 180, 180);\
-            }\
-            QRadioButton::indicator:unchecked {\
-                background-color: rgb(60, 60, 60);\
-                border:                 2px solid grey;\
-                border-color: rgb(140, 140, 140);\
-            }\
-            QPushButton {\
-                background-color: rgb(80, 80, 80);\
-                border-style: solid;\
-                border-width:0px;\
-                border-color: rgb(160, 70, 60);\
-                border-radius:8px;\
-                color: rgb(186, 186, 186);\
-                min-height: 50px;\
-            }\
-            QPushButton:checked {\
-                background-color: rgb(157, 102, 71);\
-            }\
-            QPushButton:focus {\
-                background-color: rgb(85, 85, 85);\
-            }\
-            QPushButton:hover{\
-                background-color: rgb(90, 90, 90);\
-            }\
-            QPushButton:pressed{\
-                background-color: rgb(74, 105, 129);\
-            }\
-            QPushButton[state='active']{\
-                background-color: rgb(96, 117, 79);\
-            }\
-            QPushButton[state='set']{\
-                background-color: rgb(70, 99, 91);\
-            }\
-            QPushButton[state='clear']{\
-                background-color: rgb(80, 80, 80);\
-            }\
-            QProgressBar {\
-                border: 1px solid;\
-                border-color:rgb(90,90,90);\
-                border-radius: 5px;\
-            }\
-            QProgressBar::chunk {\
-                background-color: #05B8CC;\
-                width: 20px;\
-            }\
-            QListWidget {\
-                show-decoration-selected: 1; \
-                background: rgb(65, 65, 65);    \
-                border: 1px solid grey;\
-                border-radius: 10px;\
-                padding: 6px 6px;\
-                border-color: rgb(80, 80, 80); \
-                margin-bottom: 0px;\
-                padding-right: 6px;\
-                alternate-background-color: rgb(65, 65, 65); \
-            }\
-            QListWidget:focus {\
-                background-color: rgb(60, 60, 60);\
-            }\
-            QListWidget::item {\
-                background: rgb(65, 65, 65); \
-                margin-bottom: 2px;\
-                border: 0px solid #000000;\
-                border-radius: 4px;    \
-                padding-left: 4px;\
-                margin-right: 4px;\
-                height:24px;\
-            }\
-            QListWidget::item:alternate {\
-                border: 0px solid #3c3c3c;\
-                background: rgb(62, 62, 62);\
-            }\
-            QListWidget::item:selected {\
-                background-color: #4a6981;\
-            }\
-            QListWidget::item:selected:!active {\
-                background-color: #4f718c; \
-                color: #fff;\
-            }\
-            QListWidget::item:hover {\
-                background: rgb(80, 80, 80);\
-            }\
-            QListWidget::item:selected:hover {\
-                background-color: #4f7089;\
-            }\
-            QListWidget::item::selected:pressed {\
-                background-color: #648eaf;\
-            }\
-            QScrollBar:vertical {\
-                border: 1px solid grey;\
-                border-color: rgb(90,90,90);\
-                background: rgb(60,60,60);\
-                width: 8px;\
-                padding:  0;\
-                margin-right: 0px;\
-            }\
-            QScrollBar::handle:vertical {\
-                background: rgb(90,90,90);\
-                min-height: 20px;\
-            }\
-            QScrollBar::add-line:vertical {\
-                border: 0px solid grey;\
-                background: red;\
-                height: 0px;\
-                subcontrol-position: bottom;\
-                subcontrol-origin: margin;\
-            }\
-            QScrollBar::sub-line:vertical {\
-                border: 0px solid;\
-                border-color:rgb(90,90,90);\
-                background: green;\
-                height: 0px;\
-                subcontrol-position: top;\
-                subcontrol-origin: margin;\
-            }\
-            QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical {\
-                border: 1px solid grey;\
-                width: 10px;\
-                height: 10px;\
-            }\
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {\
-                background: none;\
-            }\
-            QAbstractScrollArea::corner {\
-                background: none;\
-                border: none;\
-            }\
-            QLineEdit {\
-                color: #fff;\
-                width: 100%;\
-                background: rgb(65, 65, 65);    \
-                border: 1px solid #05B8CC;\
-                border-radius: 4px;\
-                padding: 0px 2px;\
-                height:24px;\
-            }\
-            QLineEdit:hover {\
-                width: 100%;\
-                background: rgb(65, 65, 65);    \
-                border: 1px solid #05B8CC;\
-                border-radius: 4px;\
-                padding: 0px 2px;\
-                height:24px;\
-            }\
-            QMenu {\
-                margin: 0px; /* some spacing around the menu */\
-                background: rgb(65, 65, 65);\
-                border: 1px solid rgb(115, 115, 115); \
-                padding: 8px 8px;\
-            }\
-            QMenu::item {\
-                color: rgb(180, 180, 180);\
-                padding: 4px 25px 4px 20px;\
-            }\
-            QMenu::item:selected {\
-                background: rgb(45, 45, 45);\
-                border-radius: 6px;\
-            }\
-            QMenu::separator {\
-                height: 2px;\
-                margin-left: 10px;\
-                margin-right: 5px;\
-            }\
-            QMenu::indicator {\
-                width: 13px;\
-                height: 13px;\
-            }\
-            ")
+        self.setStyleSheet("""
+            QWidget{
+                background-color: rgb(70, 70, 70);  
+                color: rgb(140, 140, 140);
+                font: 10pt Arial, Sans-serif;
+                outline: 0;
+            }
+            QGroupBox {
+                background-color: rgb(65, 65, 65);
+                border: 1px solid;
+                border-color: rgb(80, 80, 80); 
+                border-radius: 5px;
+                margin-top: 2.5ex; 
+            }
+            QGroupBox::title {
+                color:rgb(120,120,120);
+                subcontrol-origin: margin;
+                subcontrol-position: top center; 
+                margin: 0px 4px;
+                padding: 0px;
+            }
+            QLabel#headerLabel{
+                background-color: rgb(59, 82, 125);
+            }
+            Line {
+                margin: 0px;
+                padding: 0px;
+            }
+            QSpinBox {
+                padding: 0px 8px 0px 5px;
+                background-color: rgb(50, 50, 50);
+                border-width: 0px;
+                border-radius: 8px;
+                color: rgb(150, 150, 150);
+                font: bold 14pt Sans-serif ;
+            }
+            QSpinBox:focus {
+                background-color: rgb(55, 55, 55);
+            }
+            QSpinBox:hover {
+                background-color: rgb(60, 60, 60);
+            }
+            QSpinBox:pressed {
+                background-color: rgb(74, 105, 129);
+            }
+            QRadioButton {
+                background-color: rgb(65, 65, 65);
+                color: rgb(180, 180, 180);
+                border-radius:8px;
+                padding: 4px;
+            }
+            QRadioButton:checked{
+                background-color: rgb(80, 80, 80); 
+            
+            }
+            QRadioButton:focus {
+                background-color: rgb(85, 85, 85);
+            }
+            QRadioButton:hover{
+                background-color: rgb(90, 90, 90);
+            }
+            QRadioButton:pressed{
+                background-color: rgb(74, 105, 129);
+            }
+            QRadioButton::indicator {
+                width:                  8px;
+                height:                 8px;
+                border-radius:          6px;
+            }
+            QRadioButton::indicator:checked {
+                background-color:   #05B8CC;
+                border:             2px solid grey;
+                border-color:       rgb(180, 180, 180);
+            }
+            QRadioButton::indicator:unchecked {
+                background-color: rgb(60, 60, 60);
+                border:                 2px solid grey;
+                border-color: rgb(140, 140, 140);
+            }
+            QPushButton {
+                background-color: rgb(80, 80, 80);
+                border-style: solid;
+                border-width:0px;
+                border-color: rgb(160, 70, 60);
+                border-radius:8px;
+                color: rgb(186, 186, 186);
+                min-height: 50px;
+            }
+            QPushButton:checked {
+                background-color: rgb(157, 102, 71);
+            }
+            QPushButton:focus {
+                background-color: rgb(85, 85, 85);
+            }
+            QPushButton:hover{
+                background-color: rgb(90, 90, 90);
+            }
+            QPushButton:pressed{
+                background-color: rgb(74, 105, 129);
+            }
+            QPushButton[state='active']{
+                background-color: rgb(96, 117, 79);
+            }
+            QPushButton[state='set']{
+                background-color: rgb(70, 99, 91);
+            }
+            QPushButton[state='clear']{
+                background-color: rgb(80, 80, 80);
+            }
+            QProgressBar {
+                border: 1px solid;
+                border-color:rgb(90,90,90);
+                border-radius: 5px;
+            }
+            QProgressBar::chunk {
+                background-color: #05B8CC;
+                width: 20px;
+            }
+            QListWidget {
+                show-decoration-selected: 1; 
+                background: rgb(65, 65, 65);    
+                border: 1px solid grey;
+                border-radius: 10px;
+                padding: 6px 6px;
+                border-color: rgb(80, 80, 80); 
+                margin-bottom: 0px;
+                padding-right: 6px;
+                alternate-background-color: rgb(65, 65, 65); 
+            }
+            QListWidget:focus {
+                background-color: rgb(60, 60, 60);
+            }
+            QListWidget::item {
+                background: rgb(65, 65, 65); 
+                margin-bottom: 2px;
+                border: 0px solid #000000;
+                border-radius: 4px;    
+                padding-left: 4px;
+                margin-right: 4px;
+                height:24px;
+            }
+            QListWidget::item:alternate {
+                border: 0px solid #3c3c3c;
+                background: rgb(62, 62, 62);
+            }
+            QListWidget::item:selected {
+                background-color: #4a6981;
+            }
+            QListWidget::item:selected:!active {
+                background-color: #4f718c; 
+                color: #fff;
+            }
+            QListWidget::item:hover {
+                background: rgb(80, 80, 80);
+            }
+            QListWidget::item:selected:hover {
+                background-color: #4f7089;
+            }
+            QListWidget::item::selected:pressed {
+                background-color: #648eaf;
+            }
+            QScrollBar:vertical {
+                border: 1px solid grey;
+                border-color: rgb(90,90,90);
+                background: rgb(60,60,60);
+                width: 8px;
+                padding:  0;
+                margin-right: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgb(90,90,90);
+                min-height: 20px;
+            }
+            QScrollBar::add-line:vertical {
+                border: 0px solid grey;
+                background: red;
+                height: 0px;
+                subcontrol-position: bottom;
+                subcontrol-origin: margin;
+            }
+            QScrollBar::sub-line:vertical {
+                border: 0px solid;
+                border-color:rgb(90,90,90);
+                background: green;
+                height: 0px;
+                subcontrol-position: top;
+                subcontrol-origin: margin;
+            }
+            QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical {
+                border: 1px solid grey;
+                width: 10px;
+                height: 10px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            QAbstractScrollArea::corner {
+                background: none;
+                border: none;
+            }
+            QLineEdit {
+                color: #fff;
+                width: 100%;
+                background: rgb(65, 65, 65);    
+                border: 1px solid #05B8CC;
+                border-radius: 4px;
+                padding: 0px 2px;
+                height:24px;
+            }
+            QLineEdit:hover {
+                width: 100%;
+                background: rgb(65, 65, 65);    
+                border: 1px solid #05B8CC;
+                border-radius: 4px;
+                padding: 0px 2px;
+                height:24px;
+            }
+            QMenu {
+                margin: 0px; /* some spacing around the menu */
+                background: rgb(65, 65, 65);
+                border: 1px solid rgb(115, 115, 115); 
+                padding: 8px 8px;
+            }
+            QMenu::item {
+                color: rgb(180, 180, 180);
+                padding: 4px 25px 4px 20px;
+            }
+            QMenu::item:selected {
+                background: rgb(45, 45, 45);
+                border-radius: 6px;
+            }
+            QMenu::separator {
+                height: 2px;
+                margin-left: 10px;
+                margin-right: 5px;
+            }
+            QMenu::indicator {
+                width: 13px;
+                height: 13px;
+            }""")
 
         # Main layout ------------------------------------------------ #
         self.LYT_main_grid = QtWidgets.QGridLayout()
@@ -1149,7 +1199,7 @@ class View(QtWidgets.QDialog):
         self.SPN_end_frame.setButtonSymbols(\
             QtWidgets.QAbstractSpinBox.NoButtons)
         self.SPN_end_frame.setMinimum(-999999999)
-        self.SPN_end_frame.setMaximum(999999999)        
+        self.SPN_end_frame.setMaximum(999999999)
         # - LBL_end_frame
         self.LBL_end_frame = QtWidgets.QLabel()
         self.LYT_grid_time.addWidget(self.LBL_end_frame, 1, 0)
@@ -1167,7 +1217,7 @@ class View(QtWidgets.QDialog):
         self.LN_top.setSizePolicy(
             QtWidgets.QSizePolicy.Minimum,
             QtWidgets.QSizePolicy.Fixed)
-        
+
         # Bake step option box --------------------------------------- #
         self.GRP_options = QtWidgets.QGroupBox()
         self.LYT_main_vertical.addWidget(self.GRP_options)
@@ -1228,7 +1278,16 @@ class View(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Minimum,
             QtWidgets.QSizePolicy.Fixed)
 
-        # The function buttons --------------------------------------- # 
+        # The function buttons --------------------------------------- #
+        self.BTN_select_space = QtWidgets.QPushButton()
+        self.LYT_main_vertical.addWidget(self.BTN_select_space)
+        self.BTN_select_space.setText("Select Space Controls")
+        self.BTN_select_space.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Preferred)
+        self.BTN_select_space.setMinimumSize(0, 46)
+        self.BTN_select_space.setFocusPolicy(QtCore.Qt.WheelFocus)
+
         self.BTN_create_pins = QtWidgets.QPushButton()
         self.LYT_main_vertical.addWidget(self.BTN_create_pins)
         self.BTN_create_pins.setText("Create Pins")
@@ -1284,7 +1343,7 @@ class View(QtWidgets.QDialog):
 
         # Right click menu ------------------------------------------- #
 
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)            
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.on_context_menu)
 
         self.popup_menu = QtWidgets.QMenu(self)
@@ -1293,7 +1352,7 @@ class View(QtWidgets.QDialog):
         self.menu_mini = QtWidgets.QAction('Miniaturize UI', self)
         self.popup_menu.addAction(self.menu_mini)
         self.menu_mini.triggered.connect(self.on_menu_mini_clicked)
-        
+
 
 
     # QT Event handling ---------------------------------------------- #
@@ -1324,6 +1383,7 @@ class View(QtWidgets.QDialog):
         self.kill_callbacks()
         global _view
         _view = None
+        self.stop()
 
 
     # Callback handling ---------------------------------------------- #
@@ -1457,7 +1517,11 @@ class View(QtWidgets.QDialog):
         #cmds.undoInfo(cck=True) # Annoying to have this flood the stack
 
     # Main button handling ------------------------------------------- #
-    
+
+    def on_select_space(self):
+        from klugTools import rig_utils
+        rig_utils.select_space_controls()
+
     def on_create_pins(self):
         self.kill_callbacks(verbose = False)
         new_pin = create_pins(\
@@ -1466,7 +1530,6 @@ class View(QtWidgets.QDialog):
 
         self.init_callbacks()
         self._init_pin_group_list()
-
 
     def on_bake_pins(self):
         # Grab SPN_step
@@ -1538,13 +1601,17 @@ class View(QtWidgets.QDialog):
 # Beta image:
 image_data = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAALQAAAAyCAYAAAD1JPH3AAAACXBIWXMAAC4jAAAuIwF4pT92AAAKT2lDQ1BQaG90b3Nob3AgSUNDIHByb2ZpbGUAAHjanVNnVFPpFj333vRCS4iAlEtvUhUIIFJCi4AUkSYqIQkQSoghodkVUcERRUUEG8igiAOOjoCMFVEsDIoK2AfkIaKOg6OIisr74Xuja9a89+bN/rXXPues852zzwfACAyWSDNRNYAMqUIeEeCDx8TG4eQuQIEKJHAAEAizZCFz/SMBAPh+PDwrIsAHvgABeNMLCADATZvAMByH/w/qQplcAYCEAcB0kThLCIAUAEB6jkKmAEBGAYCdmCZTAKAEAGDLY2LjAFAtAGAnf+bTAICd+Jl7AQBblCEVAaCRACATZYhEAGg7AKzPVopFAFgwABRmS8Q5ANgtADBJV2ZIALC3AMDOEAuyAAgMADBRiIUpAAR7AGDIIyN4AISZABRG8lc88SuuEOcqAAB4mbI8uSQ5RYFbCC1xB1dXLh4ozkkXKxQ2YQJhmkAuwnmZGTKBNA/g88wAAKCRFRHgg/P9eM4Ors7ONo62Dl8t6r8G/yJiYuP+5c+rcEAAAOF0ftH+LC+zGoA7BoBt/qIl7gRoXgugdfeLZrIPQLUAoOnaV/Nw+H48PEWhkLnZ2eXk5NhKxEJbYcpXff5nwl/AV/1s+X48/Pf14L7iJIEyXYFHBPjgwsz0TKUcz5IJhGLc5o9H/LcL//wd0yLESWK5WCoU41EScY5EmozzMqUiiUKSKcUl0v9k4t8s+wM+3zUAsGo+AXuRLahdYwP2SycQWHTA4vcAAPK7b8HUKAgDgGiD4c93/+8//UegJQCAZkmScQAAXkQkLlTKsz/HCAAARKCBKrBBG/TBGCzABhzBBdzBC/xgNoRCJMTCQhBCCmSAHHJgKayCQiiGzbAdKmAv1EAdNMBRaIaTcA4uwlW4Dj1wD/phCJ7BKLyBCQRByAgTYSHaiAFiilgjjggXmYX4IcFIBBKLJCDJiBRRIkuRNUgxUopUIFVIHfI9cgI5h1xGupE7yAAygvyGvEcxlIGyUT3UDLVDuag3GoRGogvQZHQxmo8WoJvQcrQaPYw2oefQq2gP2o8+Q8cwwOgYBzPEbDAuxsNCsTgsCZNjy7EirAyrxhqwVqwDu4n1Y8+xdwQSgUXACTYEd0IgYR5BSFhMWE7YSKggHCQ0EdoJNwkDhFHCJyKTqEu0JroR+cQYYjIxh1hILCPWEo8TLxB7iEPENyQSiUMyJ7mQAkmxpFTSEtJG0m5SI+ksqZs0SBojk8naZGuyBzmULCAryIXkneTD5DPkG+Qh8lsKnWJAcaT4U+IoUspqShnlEOU05QZlmDJBVaOaUt2ooVQRNY9aQq2htlKvUYeoEzR1mjnNgxZJS6WtopXTGmgXaPdpr+h0uhHdlR5Ol9BX0svpR+iX6AP0dwwNhhWDx4hnKBmbGAcYZxl3GK+YTKYZ04sZx1QwNzHrmOeZD5lvVVgqtip8FZHKCpVKlSaVGyovVKmqpqreqgtV81XLVI+pXlN9rkZVM1PjqQnUlqtVqp1Q61MbU2epO6iHqmeob1Q/pH5Z/YkGWcNMw09DpFGgsV/jvMYgC2MZs3gsIWsNq4Z1gTXEJrHN2Xx2KruY/R27iz2qqaE5QzNKM1ezUvOUZj8H45hx+Jx0TgnnKKeX836K3hTvKeIpG6Y0TLkxZVxrqpaXllirSKtRq0frvTau7aedpr1Fu1n7gQ5Bx0onXCdHZ4/OBZ3nU9lT3acKpxZNPTr1ri6qa6UbobtEd79up+6Ynr5egJ5Mb6feeb3n+hx9L/1U/W36p/VHDFgGswwkBtsMzhg8xTVxbzwdL8fb8VFDXcNAQ6VhlWGX4YSRudE8o9VGjUYPjGnGXOMk423GbcajJgYmISZLTepN7ppSTbmmKaY7TDtMx83MzaLN1pk1mz0x1zLnm+eb15vft2BaeFostqi2uGVJsuRaplnutrxuhVo5WaVYVVpds0atna0l1rutu6cRp7lOk06rntZnw7Dxtsm2qbcZsOXYBtuutm22fWFnYhdnt8Wuw+6TvZN9un2N/T0HDYfZDqsdWh1+c7RyFDpWOt6azpzuP33F9JbpL2dYzxDP2DPjthPLKcRpnVOb00dnF2e5c4PziIuJS4LLLpc+Lpsbxt3IveRKdPVxXeF60vWdm7Obwu2o26/uNu5p7ofcn8w0nymeWTNz0MPIQ+BR5dE/C5+VMGvfrH5PQ0+BZ7XnIy9jL5FXrdewt6V3qvdh7xc+9j5yn+M+4zw33jLeWV/MN8C3yLfLT8Nvnl+F30N/I/9k/3r/0QCngCUBZwOJgUGBWwL7+Hp8Ib+OPzrbZfay2e1BjKC5QRVBj4KtguXBrSFoyOyQrSH355jOkc5pDoVQfujW0Adh5mGLw34MJ4WHhVeGP45wiFga0TGXNXfR3ENz30T6RJZE3ptnMU85ry1KNSo+qi5qPNo3ujS6P8YuZlnM1VidWElsSxw5LiquNm5svt/87fOH4p3iC+N7F5gvyF1weaHOwvSFpxapLhIsOpZATIhOOJTwQRAqqBaMJfITdyWOCnnCHcJnIi/RNtGI2ENcKh5O8kgqTXqS7JG8NXkkxTOlLOW5hCepkLxMDUzdmzqeFpp2IG0yPTq9MYOSkZBxQqohTZO2Z+pn5mZ2y6xlhbL+xW6Lty8elQfJa7OQrAVZLQq2QqboVFoo1yoHsmdlV2a/zYnKOZarnivN7cyzytuQN5zvn//tEsIS4ZK2pYZLVy0dWOa9rGo5sjxxedsK4xUFK4ZWBqw8uIq2Km3VT6vtV5eufr0mek1rgV7ByoLBtQFr6wtVCuWFfevc1+1dT1gvWd+1YfqGnRs+FYmKrhTbF5cVf9go3HjlG4dvyr+Z3JS0qavEuWTPZtJm6ebeLZ5bDpaql+aXDm4N2dq0Dd9WtO319kXbL5fNKNu7g7ZDuaO/PLi8ZafJzs07P1SkVPRU+lQ27tLdtWHX+G7R7ht7vPY07NXbW7z3/T7JvttVAVVN1WbVZftJ+7P3P66Jqun4lvttXa1ObXHtxwPSA/0HIw6217nU1R3SPVRSj9Yr60cOxx++/p3vdy0NNg1VjZzG4iNwRHnk6fcJ3/ceDTradox7rOEH0x92HWcdL2pCmvKaRptTmvtbYlu6T8w+0dbq3nr8R9sfD5w0PFl5SvNUyWna6YLTk2fyz4ydlZ19fi753GDborZ752PO32oPb++6EHTh0kX/i+c7vDvOXPK4dPKy2+UTV7hXmq86X23qdOo8/pPTT8e7nLuarrlca7nuer21e2b36RueN87d9L158Rb/1tWeOT3dvfN6b/fF9/XfFt1+cif9zsu72Xcn7q28T7xf9EDtQdlD3YfVP1v+3Njv3H9qwHeg89HcR/cGhYPP/pH1jw9DBY+Zj8uGDYbrnjg+OTniP3L96fynQ89kzyaeF/6i/suuFxYvfvjV69fO0ZjRoZfyl5O/bXyl/erA6xmv28bCxh6+yXgzMV70VvvtwXfcdx3vo98PT+R8IH8o/2j5sfVT0Kf7kxmTk/8EA5jz/GMzLdsAAEKeaVRYdFhNTDpjb20uYWRvYmUueG1wAAAAAAA8P3hwYWNrZXQgYmVnaW49Iu+7vyIgaWQ9Ilc1TTBNcENlaGlIenJlU3pOVGN6a2M5ZCI/Pgo8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJBZG9iZSBYTVAgQ29yZSA1LjYtYzA2NyA3OS4xNTc3NDcsIDIwMTUvMDMvMzAtMjM6NDA6NDIgICAgICAgICI+CiAgIDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+CiAgICAgIDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiCiAgICAgICAgICAgIHhtbG5zOnhtcD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyIKICAgICAgICAgICAgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIgogICAgICAgICAgICB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIKICAgICAgICAgICAgeG1sbnM6c3RFdnQ9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZUV2ZW50IyIKICAgICAgICAgICAgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiCiAgICAgICAgICAgIHhtbG5zOnBob3Rvc2hvcD0iaHR0cDovL25zLmFkb2JlLmNvbS9waG90b3Nob3AvMS4wLyIKICAgICAgICAgICAgeG1sbnM6dGlmZj0iaHR0cDovL25zLmFkb2JlLmNvbS90aWZmLzEuMC8iCiAgICAgICAgICAgIHhtbG5zOmV4aWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20vZXhpZi8xLjAvIj4KICAgICAgICAgPHhtcDpDcmVhdG9yVG9vbD5BZG9iZSBQaG90b3Nob3AgQ0MgMjAxNSAoV2luZG93cyk8L3htcDpDcmVhdG9yVG9vbD4KICAgICAgICAgPHhtcDpDcmVhdGVEYXRlPjIwMTgtMDMtMTNUMDE6Mzc6MzAtMDc6MDA8L3htcDpDcmVhdGVEYXRlPgogICAgICAgICA8eG1wOk1ldGFkYXRhRGF0ZT4yMDE4LTA4LTMxVDE3OjA4OjQyLTA3OjAwPC94bXA6TWV0YWRhdGFEYXRlPgogICAgICAgICA8eG1wOk1vZGlmeURhdGU+MjAxOC0wOC0zMVQxNzowODo0Mi0wNzowMDwveG1wOk1vZGlmeURhdGU+CiAgICAgICAgIDxkYzpmb3JtYXQ+aW1hZ2UvcG5nPC9kYzpmb3JtYXQ+CiAgICAgICAgIDx4bXBNTTpJbnN0YW5jZUlEPnhtcC5paWQ6ZjZiMWUxZWEtZDRlNC01NTRkLTkzZDYtYzUzNzlhODhiM2VhPC94bXBNTTpJbnN0YW5jZUlEPgogICAgICAgICA8eG1wTU06RG9jdW1lbnRJRD5hZG9iZTpkb2NpZDpwaG90b3Nob3A6MjM3MjgwN2MtYWQ3Yi0xMWU4LTgzNzQtZGI1M2Q5ZWQwNzNlPC94bXBNTTpEb2N1bWVudElEPgogICAgICAgICA8eG1wTU06T3JpZ2luYWxEb2N1bWVudElEPnhtcC5kaWQ6Nzk4MTg5ZDUtMDFhYi04NDRlLTlhMDUtOWU0ZmFiMDNiYzFmPC94bXBNTTpPcmlnaW5hbERvY3VtZW50SUQ+CiAgICAgICAgIDx4bXBNTTpIaXN0b3J5PgogICAgICAgICAgICA8cmRmOlNlcT4KICAgICAgICAgICAgICAgPHJkZjpsaSByZGY6cGFyc2VUeXBlPSJSZXNvdXJjZSI+CiAgICAgICAgICAgICAgICAgIDxzdEV2dDphY3Rpb24+Y3JlYXRlZDwvc3RFdnQ6YWN0aW9uPgogICAgICAgICAgICAgICAgICA8c3RFdnQ6aW5zdGFuY2VJRD54bXAuaWlkOjc5ODE4OWQ1LTAxYWItODQ0ZS05YTA1LTllNGZhYjAzYmMxZjwvc3RFdnQ6aW5zdGFuY2VJRD4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OndoZW4+MjAxOC0wMy0xM1QwMTozNzozMC0wNzowMDwvc3RFdnQ6d2hlbj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OnNvZnR3YXJlQWdlbnQ+QWRvYmUgUGhvdG9zaG9wIENDIDIwMTUgKFdpbmRvd3MpPC9zdEV2dDpzb2Z0d2FyZUFnZW50PgogICAgICAgICAgICAgICA8L3JkZjpsaT4KICAgICAgICAgICAgICAgPHJkZjpsaSByZGY6cGFyc2VUeXBlPSJSZXNvdXJjZSI+CiAgICAgICAgICAgICAgICAgIDxzdEV2dDphY3Rpb24+c2F2ZWQ8L3N0RXZ0OmFjdGlvbj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0Omluc3RhbmNlSUQ+eG1wLmlpZDpiMWFhNjVjNC1mZGRkLThhNDMtOGFlNC0yMzViOGY4NmQwYzg8L3N0RXZ0Omluc3RhbmNlSUQ+CiAgICAgICAgICAgICAgICAgIDxzdEV2dDp3aGVuPjIwMTgtMDMtMTNUMDE6Mzk6NTUtMDc6MDA8L3N0RXZ0OndoZW4+CiAgICAgICAgICAgICAgICAgIDxzdEV2dDpzb2Z0d2FyZUFnZW50PkFkb2JlIFBob3Rvc2hvcCBDQyAyMDE1IChXaW5kb3dzKTwvc3RFdnQ6c29mdHdhcmVBZ2VudD4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OmNoYW5nZWQ+Lzwvc3RFdnQ6Y2hhbmdlZD4KICAgICAgICAgICAgICAgPC9yZGY6bGk+CiAgICAgICAgICAgICAgIDxyZGY6bGkgcmRmOnBhcnNlVHlwZT0iUmVzb3VyY2UiPgogICAgICAgICAgICAgICAgICA8c3RFdnQ6YWN0aW9uPnNhdmVkPC9zdEV2dDphY3Rpb24+CiAgICAgICAgICAgICAgICAgIDxzdEV2dDppbnN0YW5jZUlEPnhtcC5paWQ6MWM2MjhjM2UtZjYxZi1lYTRmLWI0NzgtNzViNGU1ODM4Nzc4PC9zdEV2dDppbnN0YW5jZUlEPgogICAgICAgICAgICAgICAgICA8c3RFdnQ6d2hlbj4yMDE4LTA4LTMxVDE3OjA4OjQyLTA3OjAwPC9zdEV2dDp3aGVuPgogICAgICAgICAgICAgICAgICA8c3RFdnQ6c29mdHdhcmVBZ2VudD5BZG9iZSBQaG90b3Nob3AgQ0MgMjAxNSAoV2luZG93cyk8L3N0RXZ0OnNvZnR3YXJlQWdlbnQ+CiAgICAgICAgICAgICAgICAgIDxzdEV2dDpjaGFuZ2VkPi88L3N0RXZ0OmNoYW5nZWQ+CiAgICAgICAgICAgICAgIDwvcmRmOmxpPgogICAgICAgICAgICAgICA8cmRmOmxpIHJkZjpwYXJzZVR5cGU9IlJlc291cmNlIj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OmFjdGlvbj5jb252ZXJ0ZWQ8L3N0RXZ0OmFjdGlvbj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OnBhcmFtZXRlcnM+ZnJvbSBhcHBsaWNhdGlvbi92bmQuYWRvYmUucGhvdG9zaG9wIHRvIGltYWdlL3BuZzwvc3RFdnQ6cGFyYW1ldGVycz4KICAgICAgICAgICAgICAgPC9yZGY6bGk+CiAgICAgICAgICAgICAgIDxyZGY6bGkgcmRmOnBhcnNlVHlwZT0iUmVzb3VyY2UiPgogICAgICAgICAgICAgICAgICA8c3RFdnQ6YWN0aW9uPmRlcml2ZWQ8L3N0RXZ0OmFjdGlvbj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OnBhcmFtZXRlcnM+Y29udmVydGVkIGZyb20gYXBwbGljYXRpb24vdm5kLmFkb2JlLnBob3Rvc2hvcCB0byBpbWFnZS9wbmc8L3N0RXZ0OnBhcmFtZXRlcnM+CiAgICAgICAgICAgICAgIDwvcmRmOmxpPgogICAgICAgICAgICAgICA8cmRmOmxpIHJkZjpwYXJzZVR5cGU9IlJlc291cmNlIj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OmFjdGlvbj5zYXZlZDwvc3RFdnQ6YWN0aW9uPgogICAgICAgICAgICAgICAgICA8c3RFdnQ6aW5zdGFuY2VJRD54bXAuaWlkOmY2YjFlMWVhLWQ0ZTQtNTU0ZC05M2Q2LWM1Mzc5YTg4YjNlYTwvc3RFdnQ6aW5zdGFuY2VJRD4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OndoZW4+MjAxOC0wOC0zMVQxNzowODo0Mi0wNzowMDwvc3RFdnQ6d2hlbj4KICAgICAgICAgICAgICAgICAgPHN0RXZ0OnNvZnR3YXJlQWdlbnQ+QWRvYmUgUGhvdG9zaG9wIENDIDIwMTUgKFdpbmRvd3MpPC9zdEV2dDpzb2Z0d2FyZUFnZW50PgogICAgICAgICAgICAgICAgICA8c3RFdnQ6Y2hhbmdlZD4vPC9zdEV2dDpjaGFuZ2VkPgogICAgICAgICAgICAgICA8L3JkZjpsaT4KICAgICAgICAgICAgPC9yZGY6U2VxPgogICAgICAgICA8L3htcE1NOkhpc3Rvcnk+CiAgICAgICAgIDx4bXBNTTpEZXJpdmVkRnJvbSByZGY6cGFyc2VUeXBlPSJSZXNvdXJjZSI+CiAgICAgICAgICAgIDxzdFJlZjppbnN0YW5jZUlEPnhtcC5paWQ6MWM2MjhjM2UtZjYxZi1lYTRmLWI0NzgtNzViNGU1ODM4Nzc4PC9zdFJlZjppbnN0YW5jZUlEPgogICAgICAgICAgICA8c3RSZWY6ZG9jdW1lbnRJRD5hZG9iZTpkb2NpZDpwaG90b3Nob3A6ZDAxMjIxZjktM2JjNy0xMWU4LThjZmItZTllNzY2YThmODk1PC9zdFJlZjpkb2N1bWVudElEPgogICAgICAgICAgICA8c3RSZWY6b3JpZ2luYWxEb2N1bWVudElEPnhtcC5kaWQ6Nzk4MTg5ZDUtMDFhYi04NDRlLTlhMDUtOWU0ZmFiMDNiYzFmPC9zdFJlZjpvcmlnaW5hbERvY3VtZW50SUQ+CiAgICAgICAgIDwveG1wTU06RGVyaXZlZEZyb20+CiAgICAgICAgIDxwaG90b3Nob3A6Q29sb3JNb2RlPjM8L3Bob3Rvc2hvcDpDb2xvck1vZGU+CiAgICAgICAgIDxwaG90b3Nob3A6SUNDUHJvZmlsZT5zUkdCIElFQzYxOTY2LTIuMTwvcGhvdG9zaG9wOklDQ1Byb2ZpbGU+CiAgICAgICAgIDxwaG90b3Nob3A6VGV4dExheWVycz4KICAgICAgICAgICAgPHJkZjpCYWc+CiAgICAgICAgICAgICAgIDxyZGY6bGkgcmRmOnBhcnNlVHlwZT0iUmVzb3VyY2UiPgogICAgICAgICAgICAgICAgICA8cGhvdG9zaG9wOkxheWVyTmFtZT5hbmltUGluPC9waG90b3Nob3A6TGF5ZXJOYW1lPgogICAgICAgICAgICAgICAgICA8cGhvdG9zaG9wOkxheWVyVGV4dD5hbmltUGluPC9waG90b3Nob3A6TGF5ZXJUZXh0PgogICAgICAgICAgICAgICA8L3JkZjpsaT4KICAgICAgICAgICAgPC9yZGY6QmFnPgogICAgICAgICA8L3Bob3Rvc2hvcDpUZXh0TGF5ZXJzPgogICAgICAgICA8dGlmZjpPcmllbnRhdGlvbj4xPC90aWZmOk9yaWVudGF0aW9uPgogICAgICAgICA8dGlmZjpYUmVzb2x1dGlvbj4zMDAwMDAwLzEwMDAwPC90aWZmOlhSZXNvbHV0aW9uPgogICAgICAgICA8dGlmZjpZUmVzb2x1dGlvbj4zMDAwMDAwLzEwMDAwPC90aWZmOllSZXNvbHV0aW9uPgogICAgICAgICA8dGlmZjpSZXNvbHV0aW9uVW5pdD4yPC90aWZmOlJlc29sdXRpb25Vbml0PgogICAgICAgICA8ZXhpZjpDb2xvclNwYWNlPjE8L2V4aWY6Q29sb3JTcGFjZT4KICAgICAgICAgPGV4aWY6UGl4ZWxYRGltZW5zaW9uPjE4MDwvZXhpZjpQaXhlbFhEaW1lbnNpb24+CiAgICAgICAgIDxleGlmOlBpeGVsWURpbWVuc2lvbj41MDwvZXhpZjpQaXhlbFlEaW1lbnNpb24+CiAgICAgIDwvcmRmOkRlc2NyaXB0aW9uPgogICA8L3JkZjpSREY+CjwveDp4bXBtZXRhPgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgIAo8P3hwYWNrZXQgZW5kPSJ3Ij8+dyLjjQAAACBjSFJNAAB6JQAAgIMAAPn/AACA6QAAdTAA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")
 
-# Footer ============================================================= #
+# Public call ======================================================== #
 
-def show():
-    global _view
-    if _view is None:
-        _view = View()
+def UI():
+    AnimPinUI.run()
+    
+# Developer section ================================================== #
 
-    _view.show()
+if __name__ == '__main__':
+    AnimPinUI.stop()
+    
+    UI()
 
+    
 # Eof
