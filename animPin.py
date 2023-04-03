@@ -2,8 +2,8 @@
 # -------------------------------------------------------------------- #
 
 __author__  = "Daniel Klug"
-__version__ = "1.30"
-__date__    = "08-31-2018"
+__version__ = "1.35"
+__date__    = "04-02-2023"
 __email__   = "daniel@redforty.com"
 
 # -------------------------------------------------------------------- #
@@ -233,7 +233,7 @@ def create_pins(selection = None, start_frame = None, end_frame = None, group_ov
         cmds.setAttr(locator + '.t', lock=t_lock, keyable=(not t_lock))
         cmds.setAttr(locator + '.r', lock=r_lock, keyable=(not r_lock))
 
-    print "Successfully created new pin group, '%s'!" % new_pin_group
+    print("Successfully created new pin group, '%s'!" % new_pin_group)
     return new_pin_group
 
 @undo
@@ -264,8 +264,7 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
         if not cmds.objExists(control):
             # Last ditch effort to find the control. Was it renamed?
             control = cmds.listConnections(\
-                pin_constraint + '.constraintParentInverseMatrix')[0] \
-                or []
+                pin_constraint + '.constraintParentInverseMatrix')[0] or []
             if control: # fix the data
                 cmds.setAttr(pin + '.control', control, type = 'string')
         controls_to_bake.append(control)
@@ -286,10 +285,10 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
 
     if bake_option == 0:
         sample = 1
-        print "Matching keys..."
+        print("Matching keys...")
     else:
         sample = bake_option
-        print "Baking on %ds" % sample
+        print("Baking on %ds" % sample)
 
     # Do magic ------------------------------------------------------- #
     success = _do_bake(\
@@ -325,9 +324,9 @@ def bake_pins(pin_groups = None, bake_option = 1, start_frame = None, end_frame 
     pins_exist = _get_pins()
     if not pins_exist:
         cmds.delete(master_group)
-    print "Successfully baked these pin groups:"
+    print("Successfully baked these pin groups:")
     for pin_group in list(pin_groups_to_delete):
-        print pin_group
+        print(pin_group)
     return pin_groups_to_delete # We're done here!
 
 
@@ -432,8 +431,7 @@ def _validate_selection(sel_list):
                 "Skipping..." % control_name)
             continue
 
-        if _is_locked_or_not_keyable(controlFN, 'translate') and \
-            _is_locked_or_not_keyable(controlFN, 'rotate'):
+        if _is_locked_or_not_keyable(controlFN, 'translate') and _is_locked_or_not_keyable(controlFN, 'rotate'):
             api.MGlobal.displayError(\
                 "Node '%s' has no available transform channels. " \
                 "Skipping..." % control_name)
@@ -637,8 +635,8 @@ def _create_locator_pin(control_data, pin_group):
 
 def _get_maya_window():
     ptr = mui.MQtUtil.mainWindow()
-    # return QtCompat.wrapInstance(long(ptr), QtWidgets.QMainWindow) # use this when we have QtCompat
-    return _wrap_instance(long(ptr), QtWidgets.QMainWindow)
+    return QtCompat.wrapInstance(int(ptr), QtWidgets.QMainWindow) # use this when we have QtCompat
+    # return _wrap_instance(long(ptr), QtWidgets.QMainWindow)
 
 
 def _wrap_instance(ptr, base=None):
@@ -1301,8 +1299,6 @@ class View(QtWidgets.QDialog):
     def mousePressEvent(self, event):
         self.pressPos = event.pos()
         self.isMoving = True
-        # if event.button() == QtCore.Qt.RightButton:
-            # print "right button clicked"
 
     def mouseReleaseEvent(self, event):
         self.isMoving = False
@@ -1358,18 +1354,18 @@ class View(QtWidgets.QDialog):
             master_group_sel, \
             self._pin_group_child_removed)
 
-        print "Installed %s callbacks." % master_group
+        print("Installed %s callbacks." % master_group)
 
 
     def kill_callbacks(self, verbose = True):
-        if verbose: print "Uninstalling callbacks..."
+        if verbose: print("Uninstalling callbacks...")
         for ID in self._callbacks.keys():
             try:
                 self._callbacks[ID] = \
                 api.MMessage.removeCallback(self._callbacks[ID]) or []
-                # if verbose: print "Uninstalled %s callback." % ID
+                # if verbose: print("Uninstalled %s callback." % ID)
             except:
-                if verbose: print "No more callbacks to uninstall."
+                if verbose: print("No more callbacks to uninstall.")
 
 
     # Callback functions --------------------------------------------- #
@@ -1487,7 +1483,7 @@ class View(QtWidgets.QDialog):
 
     def on_menu_mini_clicked(self):
         if self.mini_state == False:
-            print "Miniaturizing UI!"
+            print("Miniaturizing UI!")
             self.LST_pin_groups.hide()
             self.LN_bottom.hide()
             self.LN_middle.hide()
@@ -1502,7 +1498,7 @@ class View(QtWidgets.QDialog):
             self.mini_state = True
             self.menu_mini.setText("Embiggen UI")
         elif self.mini_state == True:
-            print "Embiggening UI!"
+            print("Embiggening UI!")
             self.LST_pin_groups.show()
             self.LN_bottom.show()
             self.LN_middle.show()
