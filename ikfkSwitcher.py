@@ -171,6 +171,47 @@ def _pin_ik_controls(ik_controls, start_frame, end_frame):
     return locators, pin_constraints
 
 
+def _pin_fk_to_joints(fk_mapping, start_frame, end_frame):
+    """Create half-pins: baked locators that capture joint performance.
+
+    Instead of constraining FK controls directly to joints (which creates
+    a cycle because joints are already driven by FK controls), this creates
+    intermediate locators that record the joint transforms, then constrains
+    the FK controls to those baked locators.
+
+    Args:
+        fk_mapping: list of (fk_control, joint) pairs.
+        start_frame: start of the frame range.
+        end_frame: end of the frame range.
+
+    Returns:
+        tuple: (locators, fk_pin_constraints) for cleanup later.
+    """
+    locators = []
+    capture_constraints = []
+
+    for ctrl, jnt in fk_mapping:
+        loc = _create_temp_locator(jnt)
+        locators.append(loc)
+        con = cmds.parentConstraint(jnt, loc)[0]
+        capture_constraints.append(con)
+
+    # Bake locators to capture the joint performance
+    _do_bake_transforms(locators, start_frame, end_frame)
+
+    # Remove capture constraints — locators now hold keyframed data only
+    cmds.delete(capture_constraints)
+
+    # Constrain FK controls to the baked locators (no cycle)
+    fk_pin_constraints = []
+    for (ctrl, jnt), loc in zip(fk_mapping, locators):
+        con = animPin.parent_constraint_with_skips(loc, ctrl)
+        if con:
+            fk_pin_constraints.append(con)
+
+    return locators, fk_pin_constraints
+
+
 def _zero_controls(controls, start_frame, end_frame):
     """Zero out translate and rotate animation on the given controls.
 
@@ -206,7 +247,9 @@ def switch_to_fk(fk_mapping, ik_controls, blend_attr, fk_value,
 
     Workflow:
         1. Pin IK controls (stabilize while FK controls are matched)
-        2. Constrain FK controls to their deformation joints
+        2. Half-pin FK controls: bake joint performance onto locators,
+           then constrain FK controls to those locators (avoids cycles
+           from constraining FK controls directly to joints they drive)
         3. Bake FK controls + IK controls in one pass
         4. Clean up constraints and locators
         5. Set blend attribute to FK value
@@ -221,15 +264,16 @@ def switch_to_fk(fk_mapping, ik_controls, blend_attr, fk_value,
     locators, ik_pin_constraints = _pin_ik_controls(
         ik_controls, start_frame, end_frame)
 
-    # Step 2: Constrain FK controls to deformation joints
-    fk_constraints = []
-    for ctrl, jnt in fk_mapping:
-        con = animPin.parent_constraint_with_skips(jnt, ctrl)
-        if con:
-            fk_constraints.append(con)
+    # Step 2: Half-pin FK controls via baked joint locators
+    # Instead of constraining FK controls directly to joints (which creates
+    # a cycle), we bake the joint performance onto locators first, then
+    # constrain the FK controls to those independent locators.
+    fk_locators, fk_pin_constraints = _pin_fk_to_joints(
+        fk_mapping, start_frame, end_frame)
 
     # Step 3: Bake everything in one pass
-    all_constraints = fk_constraints + ik_pin_constraints
+    all_constraints = fk_pin_constraints + ik_pin_constraints
+    all_locators = fk_locators + locators
     if animLayer:
         animPin.do_bake_to_layer(
             all_controls, start_frame, end_frame, sample,
@@ -242,7 +286,7 @@ def switch_to_fk(fk_mapping, ik_controls, blend_attr, fk_value,
             cmds.delete(remaining)
 
     # Step 4: Delete pin locators
-    remaining_locs = [loc for loc in locators if cmds.objExists(loc)]
+    remaining_locs = [loc for loc in all_locators if cmds.objExists(loc)]
     if remaining_locs:
         cmds.delete(remaining_locs)
 
