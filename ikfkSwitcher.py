@@ -257,32 +257,38 @@ def switch_to_fk(fk_mapping, ik_controls, blend_attr, fk_value,
 def switch_to_ik(ik_controls, blend_attr, ik_value,
                  start_frame, end_frame, sample=1,
                  animLayer=False, unrollRotations=True,
-                 reset_controls=None):
+                 reset_controls=None, fk_controls=None):
     """Switch from FK to IK mode.
 
     Workflow:
-        1. Pin IK controls (captures world-space positions from FK-driven rig)
-        2. Zero out IK controls that need resetting (clears stale IK animation)
-        3. Bake IK controls from pins
-        4. Clean up constraints and locators
-        5. Set blend attribute to IK value
+        1. Zero out checked IK controls (clears stale IK animation)
+        2. Pin IK controls (captures world-space from FK-driven rig)
+        3. Zero out FK controls (no longer needed in IK mode)
+        4. Bake IK controls from pins
+        5. Clean up constraints and locators
+        6. Set blend attribute to IK value
 
     Args:
-        reset_controls: List of IK control names to zero out before baking.
+        reset_controls: List of IK control names to zero out before pinning.
             Controls NOT in this list (e.g. pelvis) keep their animation.
+        fk_controls: List of FK control names to zero out after pinning.
     """
     # Bookend curves to preserve animation outside the work area
     animPin.bookend_curves(list(ik_controls), start_frame, end_frame)
 
-    # Step 1: Pin IK controls (captures current world-space from FK-driven rig)
-    locators, ik_pin_constraints = _pin_ik_controls(
-        ik_controls, start_frame, end_frame)
-
-    # Step 2: Zero out stale IK animation on controls marked for reset
+    # Step 1: Zero out stale IK animation on controls marked for reset
     if reset_controls:
         _zero_controls(reset_controls, start_frame, end_frame)
 
-    # Step 3: Bake IK controls
+    # Step 2: Pin IK controls (captures current world-space from FK-driven rig)
+    locators, ik_pin_constraints = _pin_ik_controls(
+        ik_controls, start_frame, end_frame)
+
+    # Step 3: Zero out FK controls
+    if fk_controls:
+        _zero_controls(fk_controls, start_frame, end_frame)
+
+    # Step 4: Bake IK controls
     if animLayer:
         animPin.do_bake_to_layer(
             list(ik_controls), start_frame, end_frame, sample,
@@ -294,12 +300,12 @@ def switch_to_ik(ik_controls, blend_attr, ik_value,
         if remaining:
             cmds.delete(remaining)
 
-    # Step 4: Delete pin locators
+    # Step 5: Delete pin locators
     remaining_locs = [loc for loc in locators if cmds.objExists(loc)]
     if remaining_locs:
         cmds.delete(remaining_locs)
 
-    # Step 5: Set blend to IK
+    # Step 6: Set blend to IK
     _set_blend_attr(blend_attr, ik_value, start_frame, end_frame)
 
     print("IK/FK Switcher: Switched to IK mode.")
@@ -1145,6 +1151,8 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             cmds.warning("Validation failed: " + "; ".join(errors))
             return
 
+        fk_controls = [ctrl for ctrl, _jnt in config['fk_mapping']]
+
         switch_to_ik(
             ik_controls=config['ik_controls'],
             blend_attr=config['blend_attr'],
@@ -1154,7 +1162,8 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             sample=config['sample'],
             animLayer=config['animLayer'],
             unrollRotations=config['unrollRotations'],
-            reset_controls=config['reset_controls'])
+            reset_controls=config['reset_controls'],
+            fk_controls=fk_controls)
 
 
 # =============================================================================
