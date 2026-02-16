@@ -31,6 +31,8 @@ import maya.OpenMayaUI as mui
 
 from Qt import QtGui, QtCore, QtCompat, QtWidgets
 
+import animPin
+
 # =============================================================================
 # Logging
 # =============================================================================
@@ -79,6 +81,201 @@ def _save_presets_to_disk(presets):
             json.dump(presets, f, indent=2, sort_keys=True)
     except IOError:
         log.error("Failed to write presets file: %s", PRESETS_PATH)
+
+
+# =============================================================================
+# IK/FK Switch Operations
+# =============================================================================
+
+def _validate_scene_nodes(fk_mapping, ik_controls, blend_attr):
+    """Validate that all referenced nodes/attributes exist in the scene.
+
+    Returns:
+        list: Error messages. Empty if everything is valid.
+    """
+    errors = []
+    for ctrl, jnt in fk_mapping:
+        if not cmds.objExists(ctrl):
+            errors.append("FK control not found: {}".format(ctrl))
+        if not cmds.objExists(jnt):
+            errors.append("Joint not found: {}".format(jnt))
+    for ctrl in ik_controls:
+        if not cmds.objExists(ctrl):
+            errors.append("IK control not found: {}".format(ctrl))
+    if blend_attr and not cmds.objExists(blend_attr):
+        errors.append("Blend attribute not found: {}".format(blend_attr))
+    return errors
+
+
+def _create_temp_locator(ctrl):
+    """Create a temporary locator matched to a control's world-space transform."""
+    short = ctrl.split('|')[-1].split(':')[-1]
+    loc = cmds.spaceLocator(name=short + '_ikfk_tmp')[0]
+    ro = cmds.getAttr(ctrl + '.rotateOrder')
+    cmds.setAttr(loc + '.rotateOrder', ro)
+    # Snap locator to control via temp constraint
+    cmds.delete(cmds.parentConstraint(ctrl, loc))
+    return loc
+
+
+def _do_bake_transforms(nodes, start_frame, end_frame, sample=1):
+    """Bake transform attributes only (tx ty tz rx ry rz)."""
+    cmds.bakeResults(
+        nodes,
+        simulation=True,
+        time=(start_frame, end_frame),
+        sampleBy=sample,
+        oversamplingRate=1,
+        disableImplicitControl=True,
+        preserveOutsideKeys=True,
+        sparseAnimCurveBake=False,
+        removeBakedAttributeFromLayer=False,
+        removeBakedAnimFromLayer=False,
+        bakeOnOverrideLayer=False,
+        minimizeRotation=True,
+        controlPoints=False,
+        shape=True,
+        at=("tx", "ty", "tz", "rx", "ry", "rz"))
+
+
+def _pin_ik_controls(ik_controls, start_frame, end_frame):
+    """Pin IK controls by creating baked locators that hold world-space positions.
+
+    Creates a locator per IK control, bakes the control's world-space motion
+    onto it, then reverses the constraint so the locator drives the control.
+
+    Returns:
+        tuple: (locators, pin_constraints) for cleanup later.
+    """
+    locators = []
+    capture_constraints = []
+
+    for ctrl in ik_controls:
+        loc = _create_temp_locator(ctrl)
+        locators.append(loc)
+        con = cmds.parentConstraint(ctrl, loc)[0]
+        capture_constraints.append(con)
+
+    # Bake locators to capture world-space motion
+    _do_bake_transforms(locators, start_frame, end_frame)
+
+    # Remove capture constraints
+    cmds.delete(capture_constraints)
+
+    # Reverse: constrain IK controls to the baked locators
+    pin_constraints = []
+    for ctrl, loc in zip(ik_controls, locators):
+        con = cmds.parentConstraint(loc, ctrl, mo=False)[0]
+        pin_constraints.append(con)
+
+    return locators, pin_constraints
+
+
+def _set_blend_attr(blend_attr, value, start_frame, end_frame):
+    """Set the IK/FK blend attribute to a value across the frame range."""
+    if not blend_attr or not cmds.objExists(blend_attr):
+        return
+    cmds.cutKey(blend_attr, time=(start_frame, end_frame), clear=True)
+    cmds.setKeyframe(blend_attr, time=start_frame, value=value)
+    cmds.setKeyframe(blend_attr, time=end_frame, value=value)
+
+
+@animPin.undo
+@animPin.viewport_off
+def switch_to_fk(fk_mapping, ik_controls, blend_attr, fk_value,
+                 start_frame, end_frame, sample=1,
+                 animLayer=False, unrollRotations=True):
+    """Switch from IK to FK mode.
+
+    Workflow:
+        1. Pin IK controls (stabilize while FK controls are matched)
+        2. Constrain FK controls to their deformation joints
+        3. Bake FK controls + IK controls in one pass
+        4. Clean up constraints and locators
+        5. Set blend attribute to FK value
+    """
+    fk_controls = [pair[0] for pair in fk_mapping]
+    all_controls = fk_controls + list(ik_controls)
+
+    # Bookend curves to preserve animation outside the work area
+    animPin.bookend_curves(all_controls, start_frame, end_frame)
+
+    # Step 1: Pin IK controls
+    locators, ik_pin_constraints = _pin_ik_controls(
+        ik_controls, start_frame, end_frame)
+
+    # Step 2: Constrain FK controls to deformation joints
+    fk_constraints = []
+    for ctrl, jnt in fk_mapping:
+        con = animPin.parent_constraint_with_skips(jnt, ctrl)
+        if con:
+            fk_constraints.append(con)
+
+    # Step 3: Bake everything in one pass
+    all_constraints = fk_constraints + ik_pin_constraints
+    if animLayer:
+        animPin.do_bake_to_layer(
+            all_controls, start_frame, end_frame, sample,
+            unrollRotations=unrollRotations,
+            constraints=all_constraints)
+    else:
+        _do_bake_transforms(all_controls, start_frame, end_frame, sample)
+        remaining = [c for c in all_constraints if cmds.objExists(c)]
+        if remaining:
+            cmds.delete(remaining)
+
+    # Step 4: Delete pin locators
+    remaining_locs = [loc for loc in locators if cmds.objExists(loc)]
+    if remaining_locs:
+        cmds.delete(remaining_locs)
+
+    # Step 5: Set blend to FK
+    _set_blend_attr(blend_attr, fk_value, start_frame, end_frame)
+
+    print("IK/FK Switcher: Switched to FK mode.")
+
+
+@animPin.undo
+@animPin.viewport_off
+def switch_to_ik(ik_controls, blend_attr, ik_value,
+                 start_frame, end_frame, sample=1,
+                 animLayer=False, unrollRotations=True):
+    """Switch from FK to IK mode.
+
+    Workflow:
+        1. Pin IK controls (captures world-space positions from FK-driven rig)
+        2. Bake IK controls from pins
+        3. Clean up constraints and locators
+        4. Set blend attribute to IK value
+    """
+    # Bookend curves to preserve animation outside the work area
+    animPin.bookend_curves(list(ik_controls), start_frame, end_frame)
+
+    # Step 1: Pin IK controls
+    locators, ik_pin_constraints = _pin_ik_controls(
+        ik_controls, start_frame, end_frame)
+
+    # Step 2: Bake IK controls
+    if animLayer:
+        animPin.do_bake_to_layer(
+            list(ik_controls), start_frame, end_frame, sample,
+            unrollRotations=unrollRotations,
+            constraints=ik_pin_constraints)
+    else:
+        _do_bake_transforms(list(ik_controls), start_frame, end_frame, sample)
+        remaining = [c for c in ik_pin_constraints if cmds.objExists(c)]
+        if remaining:
+            cmds.delete(remaining)
+
+    # Step 3: Delete pin locators
+    remaining_locs = [loc for loc in locators if cmds.objExists(loc)]
+    if remaining_locs:
+        cmds.delete(remaining_locs)
+
+    # Step 4: Set blend to IK
+    _set_blend_attr(blend_attr, ik_value, start_frame, end_frame)
+
+    print("IK/FK Switcher: Switched to IK mode.")
 
 
 # =============================================================================
@@ -811,16 +1008,101 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
                 self.LST_ik_controls.addItem(short_name)
 
     # -----------------------------------------------------------------
-    # Action button stubs
+    # Action buttons
     # -----------------------------------------------------------------
 
+    def _get_ui_config(self):
+        """Gather configuration from all UI fields."""
+        fk_mapping = []
+        for row in range(self.TBL_fk_mapping.rowCount()):
+            ctrl_item = self.TBL_fk_mapping.item(row, 0)
+            jnt_item = self.TBL_fk_mapping.item(row, 1)
+            ctrl = ctrl_item.text().strip() if ctrl_item else ""
+            jnt = jnt_item.text().strip() if jnt_item else ""
+            if ctrl and jnt:
+                fk_mapping.append((ctrl, jnt))
+
+        ik_controls = []
+        for i in range(self.LST_ik_controls.count()):
+            text = self.LST_ik_controls.item(i).text().strip()
+            if text:
+                ik_controls.append(text)
+
+        blend_attr = self.TXT_blend_attr.text().strip()
+        fk_value = self.SPN_fk_value.value()
+        ik_value = self.SPN_ik_value.value()
+        start_frame = self.SPN_start_frame.value()
+        end_frame = self.SPN_end_frame.value()
+
+        sample = 1 if self.OPT_match_keys.isChecked() else self.SPN_step.value()
+        use_animLayer = self.CHK_bake_to_layer.isChecked()
+        unrollRotations = self.CHK_unroll_rotations.isChecked()
+
+        return {
+            'fk_mapping': fk_mapping,
+            'ik_controls': ik_controls,
+            'blend_attr': blend_attr,
+            'fk_value': fk_value,
+            'ik_value': ik_value,
+            'start_frame': start_frame,
+            'end_frame': end_frame,
+            'sample': sample,
+            'animLayer': use_animLayer,
+            'unrollRotations': unrollRotations,
+        }
+
     def _on_switch_to_fk(self):
-        """Switch from IK to FK. (Implementation pending)"""
-        cmds.warning("Switch to FK - not yet implemented")
+        """Switch from IK to FK."""
+        config = self._get_ui_config()
+
+        if not config['fk_mapping']:
+            cmds.warning("No FK mapping defined.")
+            return
+        if not config['ik_controls']:
+            cmds.warning("No IK controls defined.")
+            return
+
+        errors = _validate_scene_nodes(
+            config['fk_mapping'], config['ik_controls'],
+            config['blend_attr'])
+        if errors:
+            cmds.warning("Validation failed: " + "; ".join(errors))
+            return
+
+        switch_to_fk(
+            fk_mapping=config['fk_mapping'],
+            ik_controls=config['ik_controls'],
+            blend_attr=config['blend_attr'],
+            fk_value=config['fk_value'],
+            start_frame=config['start_frame'],
+            end_frame=config['end_frame'],
+            sample=config['sample'],
+            animLayer=config['animLayer'],
+            unrollRotations=config['unrollRotations'])
 
     def _on_switch_to_ik(self):
-        """Switch from FK to IK. (Implementation pending)"""
-        cmds.warning("Switch to IK - not yet implemented")
+        """Switch from FK to IK."""
+        config = self._get_ui_config()
+
+        if not config['ik_controls']:
+            cmds.warning("No IK controls defined.")
+            return
+
+        errors = _validate_scene_nodes(
+            [], config['ik_controls'], config['blend_attr'])
+        if errors:
+            cmds.warning("Validation failed: " + "; ".join(errors))
+            return
+
+        switch_to_ik(
+            ik_controls=config['ik_controls'],
+            blend_attr=config['blend_attr'],
+            ik_value=config['ik_value'],
+            start_frame=config['start_frame'],
+            end_frame=config['end_frame'],
+            sample=config['sample'],
+            animLayer=config['animLayer'],
+            unrollRotations=config['unrollRotations'])
 
 
 # =============================================================================
