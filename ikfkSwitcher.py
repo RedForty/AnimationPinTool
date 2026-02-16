@@ -171,6 +171,23 @@ def _pin_ik_controls(ik_controls, start_frame, end_frame):
     return locators, pin_constraints
 
 
+def _zero_controls(controls, start_frame, end_frame):
+    """Zero out translate and rotate animation on the given controls.
+
+    Cuts all keys in the frame range and sets tx/ty/tz/rx/ry/rz to 0.
+    """
+    attrs = ('tx', 'ty', 'tz', 'rx', 'ry', 'rz')
+    for ctrl in controls:
+        for attr in attrs:
+            plug = '{}.{}'.format(ctrl, attr)
+            if not cmds.objExists(plug):
+                continue
+            if cmds.getAttr(plug, lock=True):
+                continue
+            cmds.cutKey(plug, time=(start_frame, end_frame), clear=True)
+            cmds.setAttr(plug, 0)
+
+
 def _set_blend_attr(blend_attr, value, start_frame, end_frame):
     """Set the IK/FK blend attribute to a value across the frame range."""
     if not blend_attr or not cmds.objExists(blend_attr):
@@ -239,23 +256,33 @@ def switch_to_fk(fk_mapping, ik_controls, blend_attr, fk_value,
 @animPin.viewport_off
 def switch_to_ik(ik_controls, blend_attr, ik_value,
                  start_frame, end_frame, sample=1,
-                 animLayer=False, unrollRotations=True):
+                 animLayer=False, unrollRotations=True,
+                 reset_controls=None):
     """Switch from FK to IK mode.
 
     Workflow:
         1. Pin IK controls (captures world-space positions from FK-driven rig)
-        2. Bake IK controls from pins
-        3. Clean up constraints and locators
-        4. Set blend attribute to IK value
+        2. Zero out IK controls that need resetting (clears stale IK animation)
+        3. Bake IK controls from pins
+        4. Clean up constraints and locators
+        5. Set blend attribute to IK value
+
+    Args:
+        reset_controls: List of IK control names to zero out before baking.
+            Controls NOT in this list (e.g. pelvis) keep their animation.
     """
     # Bookend curves to preserve animation outside the work area
     animPin.bookend_curves(list(ik_controls), start_frame, end_frame)
 
-    # Step 1: Pin IK controls
+    # Step 1: Pin IK controls (captures current world-space from FK-driven rig)
     locators, ik_pin_constraints = _pin_ik_controls(
         ik_controls, start_frame, end_frame)
 
-    # Step 2: Bake IK controls
+    # Step 2: Zero out stale IK animation on controls marked for reset
+    if reset_controls:
+        _zero_controls(reset_controls, start_frame, end_frame)
+
+    # Step 3: Bake IK controls
     if animLayer:
         animPin.do_bake_to_layer(
             list(ik_controls), start_frame, end_frame, sample,
@@ -267,12 +294,12 @@ def switch_to_ik(ik_controls, blend_attr, ik_value,
         if remaining:
             cmds.delete(remaining)
 
-    # Step 3: Delete pin locators
+    # Step 4: Delete pin locators
     remaining_locs = [loc for loc in locators if cmds.objExists(loc)]
     if remaining_locs:
         cmds.delete(remaining_locs)
 
-    # Step 4: Set blend to IK
+    # Step 5: Set blend to IK
     _set_blend_attr(blend_attr, ik_value, start_frame, end_frame)
 
     print("IK/FK Switcher: Switched to IK mode.")
@@ -822,11 +849,15 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             self.TBL_fk_mapping.setItem(
                 row, 1, QtWidgets.QTableWidgetItem(pair[1]))
 
-        # IK controls
+        # IK controls (supports both old format ["name"] and new [["name", reset]])
         ik_controls = data.get("ik_controls", [])
         self.LST_ik_controls.clear()
-        for ctrl in ik_controls:
-            self.LST_ik_controls.addItem(ctrl)
+        for entry in ik_controls:
+            if isinstance(entry, list):
+                name, reset = entry[0], entry[1]
+            else:
+                name, reset = entry, True
+            self._add_ik_item(name, reset=reset)
 
         # Blend attribute
         self.TXT_blend_attr.setText(data.get("blend_attr", ""))
@@ -845,7 +876,9 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
 
         ik_controls = []
         for i in range(self.LST_ik_controls.count()):
-            ik_controls.append(self.LST_ik_controls.item(i).text())
+            item = self.LST_ik_controls.item(i)
+            reset = item.checkState() == QtCore.Qt.Checked
+            ik_controls.append([item.text(), reset])
 
         return {
             "fk_mapping": fk_mapping,
@@ -982,9 +1015,22 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
     # IK controls list handlers
     # -----------------------------------------------------------------
 
+    def _add_ik_item(self, name, reset=True):
+        """Add a checkable item to the IK controls list.
+
+        Args:
+            name: Control name.
+            reset: If True, the control will be zeroed during FK-to-IK switch.
+        """
+        item = QtWidgets.QListWidgetItem(name)
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setCheckState(
+            QtCore.Qt.Checked if reset else QtCore.Qt.Unchecked)
+        self.LST_ik_controls.addItem(item)
+
     def _on_ik_add(self):
         """Add an empty entry to the IK list."""
-        self.LST_ik_controls.addItem("")
+        self._add_ik_item("", reset=True)
 
     def _on_ik_remove(self):
         """Remove selected entries from the IK list."""
@@ -1005,7 +1051,7 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             existing = [self.LST_ik_controls.item(i).text()
                         for i in range(self.LST_ik_controls.count())]
             if short_name not in existing:
-                self.LST_ik_controls.addItem(short_name)
+                self._add_ik_item(short_name, reset=True)
 
     # -----------------------------------------------------------------
     # Action buttons
@@ -1023,10 +1069,14 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
                 fk_mapping.append((ctrl, jnt))
 
         ik_controls = []
+        reset_controls = []
         for i in range(self.LST_ik_controls.count()):
-            text = self.LST_ik_controls.item(i).text().strip()
+            item = self.LST_ik_controls.item(i)
+            text = item.text().strip()
             if text:
                 ik_controls.append(text)
+                if item.checkState() == QtCore.Qt.Checked:
+                    reset_controls.append(text)
 
         blend_attr = self.TXT_blend_attr.text().strip()
         fk_value = self.SPN_fk_value.value()
@@ -1041,6 +1091,7 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         return {
             'fk_mapping': fk_mapping,
             'ik_controls': ik_controls,
+            'reset_controls': reset_controls,
             'blend_attr': blend_attr,
             'fk_value': fk_value,
             'ik_value': ik_value,
@@ -1102,7 +1153,8 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             end_frame=config['end_frame'],
             sample=config['sample'],
             animLayer=config['animLayer'],
-            unrollRotations=config['unrollRotations'])
+            unrollRotations=config['unrollRotations'],
+            reset_controls=config['reset_controls'])
 
 
 # =============================================================================
