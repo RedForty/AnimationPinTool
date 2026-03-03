@@ -52,6 +52,12 @@ PRESETS_FILENAME = "ikfk_presets.json"
 PRESETS_DIR = os.path.dirname(os.path.abspath(__file__))
 PRESETS_PATH = os.path.join(PRESETS_DIR, PRESETS_FILENAME)
 
+# optionVar keys for persistent bake options
+OPTVAR_MATCH_KEYS = "ikfkSwitcher_matchKeys"
+OPTVAR_BAKE_STEP = "ikfkSwitcher_bakeStep"
+OPTVAR_BAKE_TO_LAYER = "ikfkSwitcher_bakeToLayer"
+OPTVAR_UNROLL_ROTATIONS = "ikfkSwitcher_unrollRotations"
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -449,6 +455,7 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.build_UI()
         self._populate_preset_dropdown()
         self.init_frame_range()
+        self._load_bake_options()
         self.init_connections()
 
     # -----------------------------------------------------------------
@@ -475,12 +482,48 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.BTN_switch_to_fk.clicked.connect(self._on_switch_to_fk)
         self.BTN_switch_to_ik.clicked.connect(self._on_switch_to_ik)
 
+        # Persist bake options on change
+        self.OPT_match_keys.toggled.connect(lambda: self._save_bake_options())
+        self.SPN_step.valueChanged.connect(lambda: self._save_bake_options())
+        self.CHK_bake_to_layer.toggled.connect(lambda: self._save_bake_options())
+        self.CHK_unroll_rotations.toggled.connect(lambda: self._save_bake_options())
+
     def init_frame_range(self):
         """Initialize frame range from timeline."""
         start = cmds.playbackOptions(query=True, animationStartTime=True)
         end = cmds.playbackOptions(query=True, animationEndTime=True)
         self.SPN_start_frame.setValue(start)
         self.SPN_end_frame.setValue(end)
+
+    def _load_bake_options(self):
+        """Restore bake options from Maya optionVars."""
+        if cmds.optionVar(exists=OPTVAR_MATCH_KEYS):
+            if cmds.optionVar(query=OPTVAR_MATCH_KEYS):
+                self.OPT_match_keys.setChecked(True)
+            else:
+                self.OPT_bake_step.setChecked(True)
+
+        if cmds.optionVar(exists=OPTVAR_BAKE_STEP):
+            self.SPN_step.setValue(cmds.optionVar(query=OPTVAR_BAKE_STEP))
+
+        if cmds.optionVar(exists=OPTVAR_BAKE_TO_LAYER):
+            self.CHK_bake_to_layer.setChecked(
+                bool(cmds.optionVar(query=OPTVAR_BAKE_TO_LAYER)))
+
+        if cmds.optionVar(exists=OPTVAR_UNROLL_ROTATIONS):
+            self.CHK_unroll_rotations.setChecked(
+                bool(cmds.optionVar(query=OPTVAR_UNROLL_ROTATIONS)))
+
+    def _save_bake_options(self):
+        """Persist bake options to Maya optionVars."""
+        cmds.optionVar(intValue=(
+            OPTVAR_MATCH_KEYS, int(self.OPT_match_keys.isChecked())))
+        cmds.optionVar(intValue=(
+            OPTVAR_BAKE_STEP, self.SPN_step.value()))
+        cmds.optionVar(intValue=(
+            OPTVAR_BAKE_TO_LAYER, int(self.CHK_bake_to_layer.isChecked())))
+        cmds.optionVar(intValue=(
+            OPTVAR_UNROLL_ROTATIONS, int(self.CHK_unroll_rotations.isChecked())))
 
     # -----------------------------------------------------------------
     # Build UI
