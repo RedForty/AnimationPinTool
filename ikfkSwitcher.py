@@ -975,6 +975,7 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.resize(WIDTH, HEIGHT)
 
     def closeEvent(self, event):
+        self._save_bake_options()
         self.stop()
 
     # -----------------------------------------------------------------
