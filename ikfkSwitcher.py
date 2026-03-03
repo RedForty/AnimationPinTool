@@ -83,6 +83,43 @@ def _save_presets_to_disk(presets):
         log.error("Failed to write presets file: %s", PRESETS_PATH)
 
 
+def _strip_namespace(name):
+    """Strip namespace prefix from a node name or attribute path.
+
+    Examples:
+        'mdl:new_rig:arm_fk_ctrl'              -> 'arm_fk_ctrl'
+        'mdl:new_rig:arm_settings.ikfk_blend'  -> 'arm_settings.ikfk_blend'
+        'arm_fk_ctrl'                           -> 'arm_fk_ctrl'
+    """
+    return name.rsplit(':', 1)[-1] if ':' in name else name
+
+
+def _add_namespace(name, namespace):
+    """Prepend a namespace to a bare node name or attribute path.
+
+    Examples:
+        ('arm_fk_ctrl', 'mdl:new_rig')             -> 'mdl:new_rig:arm_fk_ctrl'
+        ('arm_settings.ikfk_blend', 'mdl:new_rig') -> 'mdl:new_rig:arm_settings.ikfk_blend'
+        ('arm_fk_ctrl', '')                         -> 'arm_fk_ctrl'
+    """
+    if not namespace:
+        return name
+    return '{}:{}'.format(namespace, name)
+
+
+def _detect_namespace(node_name):
+    """Extract namespace prefix from a fully-qualified node name.
+
+    Examples:
+        'mdl:new_rig:arm_fk_ctrl' -> 'mdl:new_rig'
+        'rig:arm_fk_ctrl'         -> 'rig'
+        'arm_fk_ctrl'             -> ''
+    """
+    if ':' not in node_name:
+        return ''
+    return node_name.rsplit(':', 1)[0]
+
+
 # =============================================================================
 # IK/FK Switch Operations
 # =============================================================================
@@ -424,6 +461,9 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.BTN_save_preset.clicked.connect(self._on_save_preset)
         self.BTN_delete_preset.clicked.connect(self._on_delete_preset)
 
+        self.BTN_namespace_from_sel.clicked.connect(
+            self._on_namespace_from_selection)
+
         self.BTN_fk_add_row.clicked.connect(self._on_fk_add_row)
         self.BTN_fk_remove_row.clicked.connect(self._on_fk_remove_row)
         self.BTN_fk_load_sel.clicked.connect(self._on_fk_load_selection)
@@ -455,6 +495,8 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.LYT_main.setSpacing(8)
 
         self._build_preset_section()
+        self._add_line_divider()
+        self._build_namespace_section()
         self._add_line_divider()
         self._build_fk_mapping_section()
         self._add_line_divider()
@@ -648,6 +690,37 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.BTN_delete_preset = QtWidgets.QPushButton("Delete")
         self.BTN_delete_preset.setMaximumWidth(60)
         lyt.addWidget(self.BTN_delete_preset)
+
+    # -- Namespace --
+
+    def _build_namespace_section(self):
+        lyt = QtWidgets.QHBoxLayout()
+        self.LYT_main.addLayout(lyt)
+
+        lbl = QtWidgets.QLabel("Namespace:")
+        lbl.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        lyt.addWidget(lbl)
+
+        self.TXT_namespace = QtWidgets.QLineEdit()
+        self.TXT_namespace.setPlaceholderText("e.g. mdl:new_rig")
+        self.TXT_namespace.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        lyt.addWidget(self.TXT_namespace)
+
+        self.BTN_namespace_from_sel = QtWidgets.QPushButton("<< Sel")
+        self.BTN_namespace_from_sel.setMaximumWidth(60)
+        lyt.addWidget(self.BTN_namespace_from_sel)
+
+    def _on_namespace_from_selection(self):
+        """Detect namespace from the first selected node."""
+        sel = cmds.ls(selection=True, long=True)
+        if not sel:
+            cmds.warning("Nothing selected.")
+            return
+        short = sel[0].split('|')[-1]
+        ns = _detect_namespace(short)
+        self.TXT_namespace.setText(ns)
 
     # -- FK mapping table --
 
@@ -887,7 +960,11 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self._apply_preset_data(data)
 
     def _apply_preset_data(self, data):
-        """Populate UI fields from a preset dictionary."""
+        """Populate UI fields from a preset dictionary.
+
+        Strips namespaces for backward compatibility with older presets
+        that stored fully-qualified names.
+        """
         # FK mapping
         fk_mapping = data.get("fk_mapping", [])
         self.TBL_fk_mapping.setRowCount(0)
@@ -895,9 +972,9 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             row = self.TBL_fk_mapping.rowCount()
             self.TBL_fk_mapping.insertRow(row)
             self.TBL_fk_mapping.setItem(
-                row, 0, QtWidgets.QTableWidgetItem(pair[0]))
+                row, 0, QtWidgets.QTableWidgetItem(_strip_namespace(pair[0])))
             self.TBL_fk_mapping.setItem(
-                row, 1, QtWidgets.QTableWidgetItem(pair[1]))
+                row, 1, QtWidgets.QTableWidgetItem(_strip_namespace(pair[1])))
 
         # IK controls (supports both old format ["name"] and new [["name", reset]])
         ik_controls = data.get("ik_controls", [])
@@ -907,33 +984,38 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
                 name, reset = entry[0], entry[1]
             else:
                 name, reset = entry, True
-            self._add_ik_item(name, reset=reset)
+            self._add_ik_item(_strip_namespace(name), reset=reset)
 
         # Blend attribute
-        self.TXT_blend_attr.setText(data.get("blend_attr", ""))
+        self.TXT_blend_attr.setText(
+            _strip_namespace(data.get("blend_attr", "")))
         self.SPN_fk_value.setValue(data.get("fk_value", 0))
         self.SPN_ik_value.setValue(data.get("ik_value", 1))
 
     def _collect_preset_data(self):
-        """Gather current UI state into a preset dictionary."""
+        """Gather current UI state into a preset dictionary.
+
+        Names are stored without namespaces so presets are portable
+        across different rig references.
+        """
         fk_mapping = []
         for row in range(self.TBL_fk_mapping.rowCount()):
             ctrl_item = self.TBL_fk_mapping.item(row, 0)
             jnt_item = self.TBL_fk_mapping.item(row, 1)
-            ctrl = ctrl_item.text() if ctrl_item else ""
-            jnt = jnt_item.text() if jnt_item else ""
+            ctrl = _strip_namespace(ctrl_item.text()) if ctrl_item else ""
+            jnt = _strip_namespace(jnt_item.text()) if jnt_item else ""
             fk_mapping.append([ctrl, jnt])
 
         ik_controls = []
         for i in range(self.LST_ik_controls.count()):
             item = self.LST_ik_controls.item(i)
             reset = item.checkState() == QtCore.Qt.Checked
-            ik_controls.append([item.text(), reset])
+            ik_controls.append([_strip_namespace(item.text()), reset])
 
         return {
             "fk_mapping": fk_mapping,
             "ik_controls": ik_controls,
-            "blend_attr": self.TXT_blend_attr.text(),
+            "blend_attr": _strip_namespace(self.TXT_blend_attr.text()),
             "fk_value": self.SPN_fk_value.value(),
             "ik_value": self.SPN_ik_value.value(),
         }
@@ -1042,13 +1124,20 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         for i in range(pair_count):
             row = self.TBL_fk_mapping.rowCount()
             self.TBL_fk_mapping.insertRow(row)
-            # Use short names for display
-            ctrl_short = controls[i].split('|')[-1]
-            jnt_short = joints[i].split('|')[-1]
+            # Use bare names (no DAG path, no namespace) for display
+            ctrl_short = _strip_namespace(controls[i].split('|')[-1])
+            jnt_short = _strip_namespace(joints[i].split('|')[-1])
             self.TBL_fk_mapping.setItem(
                 row, 0, QtWidgets.QTableWidgetItem(ctrl_short))
             self.TBL_fk_mapping.setItem(
                 row, 1, QtWidgets.QTableWidgetItem(jnt_short))
+
+        # Auto-fill namespace from the first control if the field is empty
+        if not self.TXT_namespace.text().strip():
+            first_short = controls[0].split('|')[-1]
+            ns = _detect_namespace(first_short)
+            if ns:
+                self.TXT_namespace.setText(ns)
 
     def _fill_active_fk_cell(self, node):
         """Fill the currently selected FK table cell with the given node."""
@@ -1058,8 +1147,15 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             return
 
         short_name = node.split('|')[-1]
-        item = QtWidgets.QTableWidgetItem(short_name)
+        bare_name = _strip_namespace(short_name)
+        item = QtWidgets.QTableWidgetItem(bare_name)
         self.TBL_fk_mapping.setItem(current.row(), current.column(), item)
+
+        # Auto-fill namespace if the field is empty
+        if not self.TXT_namespace.text().strip():
+            ns = _detect_namespace(short_name)
+            if ns:
+                self.TXT_namespace.setText(ns)
 
     # -----------------------------------------------------------------
     # IK controls list handlers
@@ -1097,18 +1193,33 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
 
         for node in sel:
             short_name = node.split('|')[-1]
+            bare_name = _strip_namespace(short_name)
             # Avoid duplicates
             existing = [self.LST_ik_controls.item(i).text()
                         for i in range(self.LST_ik_controls.count())]
-            if short_name not in existing:
-                self._add_ik_item(short_name, reset=True)
+            if bare_name not in existing:
+                self._add_ik_item(bare_name, reset=True)
+
+        # Auto-fill namespace from the first node if the field is empty
+        if not self.TXT_namespace.text().strip():
+            first_short = sel[0].split('|')[-1]
+            ns = _detect_namespace(first_short)
+            if ns:
+                self.TXT_namespace.setText(ns)
 
     # -----------------------------------------------------------------
     # Action buttons
     # -----------------------------------------------------------------
 
     def _get_ui_config(self):
-        """Gather configuration from all UI fields."""
+        """Gather configuration from all UI fields.
+
+        Names stored in the UI are bare (no namespace). The namespace
+        field is prepended at this point so the returned config contains
+        fully-qualified names that Maya can resolve.
+        """
+        ns = self.TXT_namespace.text().strip()
+
         fk_mapping = []
         for row in range(self.TBL_fk_mapping.rowCount()):
             ctrl_item = self.TBL_fk_mapping.item(row, 0)
@@ -1116,7 +1227,9 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             ctrl = ctrl_item.text().strip() if ctrl_item else ""
             jnt = jnt_item.text().strip() if jnt_item else ""
             if ctrl and jnt:
-                fk_mapping.append((ctrl, jnt))
+                fk_mapping.append((
+                    _add_namespace(ctrl, ns),
+                    _add_namespace(jnt, ns)))
 
         ik_controls = []
         reset_controls = []
@@ -1124,11 +1237,13 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             item = self.LST_ik_controls.item(i)
             text = item.text().strip()
             if text:
-                ik_controls.append(text)
+                qualified = _add_namespace(text, ns)
+                ik_controls.append(qualified)
                 if item.checkState() == QtCore.Qt.Checked:
-                    reset_controls.append(text)
+                    reset_controls.append(qualified)
 
-        blend_attr = self.TXT_blend_attr.text().strip()
+        blend_attr = _add_namespace(
+            self.TXT_blend_attr.text().strip(), ns)
         fk_value = self.SPN_fk_value.value()
         ik_value = self.SPN_ik_value.value()
         start_frame = self.SPN_start_frame.value()
