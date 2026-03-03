@@ -468,8 +468,10 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.BTN_save_preset.clicked.connect(self._on_save_preset)
         self.BTN_delete_preset.clicked.connect(self._on_delete_preset)
 
-        self.BTN_namespace_from_sel.clicked.connect(
-            self._on_namespace_from_selection)
+        self.BTN_ctrl_ns_from_sel.clicked.connect(
+            self._on_ctrl_ns_from_selection)
+        self.BTN_jnt_ns_from_sel.clicked.connect(
+            self._on_jnt_ns_from_selection)
 
         self.BTN_fk_add_row.clicked.connect(self._on_fk_add_row)
         self.BTN_fk_remove_row.clicked.connect(self._on_fk_remove_row)
@@ -737,33 +739,55 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
     # -- Namespace --
 
     def _build_namespace_section(self):
-        lyt = QtWidgets.QHBoxLayout()
+        lyt = QtWidgets.QGridLayout()
         self.LYT_main.addLayout(lyt)
+        lyt.setContentsMargins(0, 0, 0, 0)
 
-        lbl = QtWidgets.QLabel("Namespace:")
-        lbl.setSizePolicy(
+        # Controls namespace row
+        lbl_ctrl = QtWidgets.QLabel("Ctrl NS:")
+        lbl_ctrl.setSizePolicy(
             QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        lyt.addWidget(lbl)
+        lyt.addWidget(lbl_ctrl, 0, 0)
 
-        self.TXT_namespace = QtWidgets.QLineEdit()
-        self.TXT_namespace.setPlaceholderText("e.g. mdl:new_rig")
-        self.TXT_namespace.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        lyt.addWidget(self.TXT_namespace)
+        self.TXT_ctrl_namespace = QtWidgets.QLineEdit()
+        self.TXT_ctrl_namespace.setPlaceholderText("e.g. RIG:RIG")
+        lyt.addWidget(self.TXT_ctrl_namespace, 0, 1)
 
-        self.BTN_namespace_from_sel = QtWidgets.QPushButton("<< Sel")
-        self.BTN_namespace_from_sel.setMaximumWidth(60)
-        lyt.addWidget(self.BTN_namespace_from_sel)
+        self.BTN_ctrl_ns_from_sel = QtWidgets.QPushButton("<< Sel")
+        self.BTN_ctrl_ns_from_sel.setMaximumWidth(60)
+        lyt.addWidget(self.BTN_ctrl_ns_from_sel, 0, 2)
 
-    def _on_namespace_from_selection(self):
-        """Detect namespace from the first selected node."""
+        # Joints namespace row
+        lbl_jnt = QtWidgets.QLabel("Joint NS:")
+        lbl_jnt.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        lyt.addWidget(lbl_jnt, 1, 0)
+
+        self.TXT_jnt_namespace = QtWidgets.QLineEdit()
+        self.TXT_jnt_namespace.setPlaceholderText("e.g. RIG:RIG:MDL")
+        lyt.addWidget(self.TXT_jnt_namespace, 1, 1)
+
+        self.BTN_jnt_ns_from_sel = QtWidgets.QPushButton("<< Sel")
+        self.BTN_jnt_ns_from_sel.setMaximumWidth(60)
+        lyt.addWidget(self.BTN_jnt_ns_from_sel, 1, 2)
+
+    def _on_ctrl_ns_from_selection(self):
+        """Detect control namespace from the first selected node."""
         sel = cmds.ls(selection=True, long=True)
         if not sel:
             cmds.warning("Nothing selected.")
             return
         short = sel[0].split('|')[-1]
-        ns = _detect_namespace(short)
-        self.TXT_namespace.setText(ns)
+        self.TXT_ctrl_namespace.setText(_detect_namespace(short))
+
+    def _on_jnt_ns_from_selection(self):
+        """Detect joint namespace from the first selected node."""
+        sel = cmds.ls(selection=True, long=True)
+        if not sel:
+            cmds.warning("Nothing selected.")
+            return
+        short = sel[0].split('|')[-1]
+        self.TXT_jnt_namespace.setText(_detect_namespace(short))
 
     # -- FK mapping table --
 
@@ -1176,12 +1200,15 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             self.TBL_fk_mapping.setItem(
                 row, 1, QtWidgets.QTableWidgetItem(jnt_short))
 
-        # Auto-fill namespace from the first control if the field is empty
-        if not self.TXT_namespace.text().strip():
-            first_short = controls[0].split('|')[-1]
-            ns = _detect_namespace(first_short)
+        # Auto-fill namespace fields from the first control/joint
+        if not self.TXT_ctrl_namespace.text().strip():
+            ns = _detect_namespace(controls[0].split('|')[-1])
             if ns:
-                self.TXT_namespace.setText(ns)
+                self.TXT_ctrl_namespace.setText(ns)
+        if not self.TXT_jnt_namespace.text().strip():
+            ns = _detect_namespace(joints[0].split('|')[-1])
+            if ns:
+                self.TXT_jnt_namespace.setText(ns)
 
     def _fill_active_fk_cell(self, node):
         """Fill the currently selected FK table cell with the given node."""
@@ -1195,11 +1222,15 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         item = QtWidgets.QTableWidgetItem(bare_name)
         self.TBL_fk_mapping.setItem(current.row(), current.column(), item)
 
-        # Auto-fill namespace if the field is empty
-        if not self.TXT_namespace.text().strip():
-            ns = _detect_namespace(short_name)
-            if ns:
-                self.TXT_namespace.setText(ns)
+        # Auto-fill the appropriate namespace field based on column
+        ns = _detect_namespace(short_name)
+        if ns:
+            if current.column() == 0:  # FK Control column
+                if not self.TXT_ctrl_namespace.text().strip():
+                    self.TXT_ctrl_namespace.setText(ns)
+            else:  # Joint column
+                if not self.TXT_jnt_namespace.text().strip():
+                    self.TXT_jnt_namespace.setText(ns)
 
     # -----------------------------------------------------------------
     # IK controls list handlers
@@ -1244,12 +1275,11 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             if bare_name not in existing:
                 self._add_ik_item(bare_name, reset=True)
 
-        # Auto-fill namespace from the first node if the field is empty
-        if not self.TXT_namespace.text().strip():
-            first_short = sel[0].split('|')[-1]
-            ns = _detect_namespace(first_short)
+        # Auto-fill control namespace from the first node if the field is empty
+        if not self.TXT_ctrl_namespace.text().strip():
+            ns = _detect_namespace(sel[0].split('|')[-1])
             if ns:
-                self.TXT_namespace.setText(ns)
+                self.TXT_ctrl_namespace.setText(ns)
 
     # -----------------------------------------------------------------
     # Action buttons
@@ -1258,11 +1288,12 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
     def _get_ui_config(self):
         """Gather configuration from all UI fields.
 
-        Names stored in the UI are bare (no namespace). The namespace
-        field is prepended at this point so the returned config contains
-        fully-qualified names that Maya can resolve.
+        Names stored in the UI are bare (no namespace). The control and
+        joint namespace fields are prepended at this point so the returned
+        config contains fully-qualified names that Maya can resolve.
         """
-        ns = self.TXT_namespace.text().strip()
+        ctrl_ns = self.TXT_ctrl_namespace.text().strip()
+        jnt_ns = self.TXT_jnt_namespace.text().strip()
 
         fk_mapping = []
         for row in range(self.TBL_fk_mapping.rowCount()):
@@ -1272,8 +1303,8 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             jnt = jnt_item.text().strip() if jnt_item else ""
             if ctrl and jnt:
                 fk_mapping.append((
-                    _add_namespace(ctrl, ns),
-                    _add_namespace(jnt, ns)))
+                    _add_namespace(ctrl, ctrl_ns),
+                    _add_namespace(jnt, jnt_ns)))
 
         ik_controls = []
         reset_controls = []
@@ -1281,13 +1312,13 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             item = self.LST_ik_controls.item(i)
             text = item.text().strip()
             if text:
-                qualified = _add_namespace(text, ns)
+                qualified = _add_namespace(text, ctrl_ns)
                 ik_controls.append(qualified)
                 if item.checkState() == QtCore.Qt.Checked:
                     reset_controls.append(qualified)
 
         blend_attr = _add_namespace(
-            self.TXT_blend_attr.text().strip(), ns)
+            self.TXT_blend_attr.text().strip(), ctrl_ns)
         fk_value = self.SPN_fk_value.value()
         ik_value = self.SPN_ik_value.value()
         start_frame = self.SPN_start_frame.value()
