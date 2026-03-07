@@ -1060,6 +1060,10 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
         self.SPN_fk_value.setValue(data.get("fk_value", 0))
         self.SPN_ik_value.setValue(data.get("ik_value", 1))
 
+        # Namespaces (older presets won't have these keys)
+        self.TXT_ctrl_namespace.setText(data.get("ctrl_namespace", ""))
+        self.TXT_jnt_namespace.setText(data.get("joint_namespace", ""))
+
     def _collect_preset_data(self):
         """Gather current UI state into a preset dictionary.
 
@@ -1086,6 +1090,8 @@ class IKFKSwitcherUI(QtWidgets.QDialog):
             "blend_attr": _strip_namespace(self.TXT_blend_attr.text()),
             "fk_value": self.SPN_fk_value.value(),
             "ik_value": self.SPN_ik_value.value(),
+            "ctrl_namespace": self.TXT_ctrl_namespace.text().strip(),
+            "joint_namespace": self.TXT_jnt_namespace.text().strip(),
         }
 
     def _on_save_preset(self):
